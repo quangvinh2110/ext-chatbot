@@ -1,0 +1,9 @@
+from .process_table import (
+    EXTRACT_STRUCTURE_TEMPLATE,
+    TRANSFORM_DATA_TEMPLATE
+)
+
+__all__ = [
+    "EXTRACT_STRUCTURE_TEMPLATE", 
+    "TRANSFORM_DATA_TEMPLATE"
+]

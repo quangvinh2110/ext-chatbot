@@ -1,3 +1,5 @@
 model_hub/
 volumes/
 resources/
+.env
+test_api.py
