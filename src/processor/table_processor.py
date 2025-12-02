@@ -4,16 +4,25 @@ import os
 import random
 import asyncio
 from typing import Optional, Dict, Any, List, Tuple
-import numpy as np
 from openai import OpenAI, AsyncOpenAI
 from tqdm.asyncio import tqdm_asyncio
+from pydantic import BaseModel
 
 from ..parser.excel_parser import TableInfo
-from ..prompts import EXTRACT_STRUCTURE_TEMPLATE, TRANSFORM_DATA_TEMPLATE
+from ..prompts import (
+    TRANSFORM_DATA_TEMPLATE,
+    IDENTIFY_HEADER_FOOTER_TEMPLATE,
+    DESIGN_SCHEMA_TEMPLATE
+)
 from ..utils import set_seed
 
 
 set_seed(42)
+
+
+class HeaderFooterInfo(BaseModel):
+    header_indices: List[int]
+    footer_indices: List[int]
 
 
 class TableProcessor:
@@ -21,11 +30,14 @@ class TableProcessor:
     Processes tables extracted by ExcelParser using an LLM to determine structure and schema.
     """
     
-    def __init__(self, 
-                 base_url: Optional[str] = None,
-                 api_key: Optional[str] = None,
-                 model: Optional[str] = None,
-                 max_concurrent_requests: int = 10):
+    def __init__(
+        self, 
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        max_concurrent_requests: int = 10,
+        max_retries: int = 3,
+    ):
         """
         Initialize the TableProcessor.
         
@@ -67,52 +79,96 @@ class TableProcessor:
         Returns:
             Dict containing 'structure_info' and 'transformed_data'.
         """
-        print("Extracting table structure...")
-        structure_info = self.extract_table_structure(table, max_retries)
+        print("Identifying header and footer...")
+        header_footer_info = self.identify_header_footer(table, max_retries)
         
+        print("Designing schema...")
+        pydantic_schema = self.design_schema(table, header_footer_info, max_retries)
+        print(pydantic_schema)
+
         print("Transforming data...")
         # transformed_data = asyncio.run(self.transform_data(
         #     table, 
-        #     structure_info, 
+        #     header_footer_info, 
+        #     pydantic_schema, 
         #     max_retries
         # ))
         transformed_data = await self.transform_data(
             table, 
-            structure_info, 
+            header_footer_info, 
+            pydantic_schema, 
             max_retries
         )
-        
+
         return {
-            "structure_info": structure_info,
+            "header_footer_info": header_footer_info,
+            "pydantic_schema": pydantic_schema,
             "transformed_data": transformed_data
         }
 
-    def extract_table_structure(
+
+    def identify_header_footer(
         self,
         table: TableInfo,
         max_retries: int = 3,
     ) -> Dict[str, Any]:
-        """
-        Process a single table to extract structure and schema information.
-        
-        Args:
-            table: TableInfo object from ExcelParser.
-            max_retries (int, optional): Maximum number of retries for API call and JSON parsing. Defaults to 3.
-            
-        Returns:
-            Dict containing 'table_structure' and 'pydantic_schema'.
-            
-        Raises:
-            ValueError: If LLM response is empty or JSON cannot be parsed after retries.
-        """
-        snippet = self._format_table_data_snippet(table.data)
-        
-        prompt = EXTRACT_STRUCTURE_TEMPLATE.replace(
+        snippet = self._format_table_data_snippet(table.data.tolist())
+        prompt = IDENTIFY_HEADER_FOOTER_TEMPLATE.replace(
             "{{table_data_snippet}}",
             snippet
         )
+
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    top_p=0.8,
+                    presence_penalty=1,
+                    extra_body = {
+                        "chat_template_kwargs": {'enable_thinking': False},
+                        "top_k": 20,
+                        "mip_p": 0,
+                        "guided_json": HeaderFooterInfo.model_json_schema(),
+                    },
+                    timeout=10,
+                )
+                
+                content = response.choices[0].message.content
+                if content is None:
+                    raise ValueError("LLM returned empty content")
+                    
+                return json.loads(content)
+            
+            except Exception as e:
+                print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+                continue
+
+        return {"header_indices": None, "footer_indices": None}
         
-        last_exception = None
+
+    def design_schema(
+        self,
+        table: TableInfo,
+        header_footer_info: Dict[str, Any],
+        max_retries: int = 3,
+    ) -> Dict[str, Any]:
+        header_indices = header_footer_info.get("header_indices") or []
+        footer_indices = header_footer_info.get("footer_indices") or []
+        header_rows = [table.data[i].tolist() for i in header_indices] if header_indices else []
+        formatted_header = self._format_rows(header_rows) if header_rows else "null"
+
+        data_list = [
+            table.data.tolist()[i] for i in range(len(table.data)) if i not in (header_indices + footer_indices)
+        ]
+        snippet = self._format_rows(random.sample(data_list, 5))
+        
+        prompt = DESIGN_SCHEMA_TEMPLATE.replace(
+            "{{header}}", formatted_header
+        ).replace(
+            "{{table_data_snippet}}", snippet
+        )
         
         for attempt in range(max_retries):
             try:
@@ -136,35 +192,29 @@ class TableProcessor:
                 return self._extract_json(content)
             
             except Exception as e:
-                last_exception = e
                 print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
                 continue
                 
-        # If we get here, all retries failed
-        if last_exception:
-            raise last_exception
-        else:
-            raise ValueError("Failed to process table after max retries")
+        raise ValueError("Failed to process request after max retries")
 
+        
     async def transform_data(
         self,
         table: TableInfo,
-        structure_info: Dict[str, Any],
+        header_footer_info: Dict[str, Any],
+        pydantic_schema: Dict[str, Any],
         max_retries: int = 3
     ) -> List[Dict[str, Any]]:
         """
-        Transform all data rows in the table to the schema defined in structure_info.
+        Transform all data rows in the table to the schema defined in pydantic_schema.
         """
         data_list = table.data.tolist()
-        table_structure = structure_info["table_structure"]
-        header_indices = table_structure.get("header_indices") or []
-        footer_indices = table_structure.get("footer_indices") or []
+        header_indices = header_footer_info.get("header_indices") or []
+        footer_indices = header_footer_info.get("footer_indices") or []
         
         # Get header rows for context
         header_rows = [data_list[i] for i in header_indices]
         formatted_header = self._format_rows(header_rows)
-        
-        pydantic_schema = structure_info["pydantic_schema"]
         
         # Identify rows to process
         rows_to_process = []
@@ -175,10 +225,9 @@ class TableProcessor:
         if not rows_to_process:
             return []
             
-        # Process with retries
         results = []
         queue = rows_to_process
-        
+
         for attempt in range(max_retries):
             if not queue:
                 break
@@ -189,7 +238,7 @@ class TableProcessor:
             batch_results = await self._transform_batch(
                 queue, 
                 formatted_header, 
-                pydantic_schema
+                pydantic_schema,
             )
             
             # Collect successes and prepare retries
@@ -214,11 +263,12 @@ class TableProcessor:
         # Return just the transformed data
         return [r["transformed_data"] for r in results]
 
+
     async def _transform_batch(
         self,
         batch_items: List[Tuple[int, List[Any]]],
         formatted_header: str,
-        pydantic_schema: Dict[str, Any]
+        pydantic_schema: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         semaphore = asyncio.Semaphore(self.max_concurrent_requests)
         tasks = [
@@ -227,13 +277,14 @@ class TableProcessor:
         ]
         return await tqdm_asyncio.gather(*tasks, desc="Transforming data")
 
+
     async def _transform_single_row(
         self,
         index: int,
         row: List[Any],
         formatted_header: str,
         pydantic_schema: Dict[str, Any],
-        semaphore: asyncio.Semaphore
+        semaphore: asyncio.Semaphore,
     ) -> Dict[str, Any]:
         await semaphore.acquire()
         try:
@@ -257,18 +308,23 @@ class TableProcessor:
                     "chat_template_kwargs": {'enable_thinking': False},
                     "top_k": 20,
                     "mip_p": 0,
-                    "guided_json": pydantic_schema
+                    # "guided_json": pydantic_schema
                 },
+                timeout=10,
             )
             
             content = response.choices[0].message.content
             if not content:
                  raise ValueError("Empty response from LLM")
+
+            transformed_data = self._extract_json(content)
+            if transformed_data.keys() != pydantic_schema["properties"].keys():
+                raise ValueError("Transformed data keys do not match pydantic schema keys")
                  
             return {
                 "success": True,
                 "error": None,
-                "transformed_data": json.loads(content), # Parse JSON
+                "transformed_data": transformed_data, # Parse JSON
                 "input_item": (index, row),
             }
             
@@ -282,9 +338,10 @@ class TableProcessor:
         finally:
             semaphore.release()
 
+
     def _format_table_data_snippet(
         self,
-        table_data: np.ndarray,
+        data_list: List[List[Any]],
         sample_size: int = 3,
     ) -> str:
         """
@@ -292,12 +349,11 @@ class TableProcessor:
         Shows the first `sample_size` rows and the last `sample_size` rows.
         """
         table_data_snippet = "["
-        rows = table_data.tolist()
-        total_rows = len(rows)
+        total_rows = len(data_list)
         
         # If table is small enough, just show the whole thing
         if total_rows <= (sample_size * 3):
-            for i, row in enumerate(rows):
+            for i, row in enumerate(data_list):
                 table_data_snippet += str(row)
                 if i < total_rows - 1:
                     table_data_snippet += ",\n "
@@ -305,26 +361,27 @@ class TableProcessor:
             return table_data_snippet
 
         # Format top rows
-        top_rows = rows[:sample_size]
+        top_rows = data_list[:sample_size]
         table_data_snippet += str(top_rows[0])
         for row in top_rows[1:]:
             table_data_snippet += (",\n "+str(row))
 
         # Format middle rows
         middle_rows = random.sample(
-            rows[sample_size:-sample_size], 
+            data_list[sample_size:-sample_size], 
             sample_size
         )
         for row in middle_rows:
             table_data_snippet += (",\n "+str(row))
                 
         # Format bottom rows
-        bottom_rows = rows[-sample_size:]
+        bottom_rows = data_list[-sample_size:]
         table_data_snippet += ",\n ...\n " + str(bottom_rows[0])
         for row in bottom_rows[1:]:
             table_data_snippet += (",\n "+str(row))
         table_data_snippet += "]"
         return table_data_snippet
+
 
     def _extract_json(self, content: str) -> Dict[str, Any]:
         """
@@ -344,6 +401,7 @@ class TableProcessor:
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse JSON from response: {e}")
 
+
     def _format_rows(self, rows: List[List[Any]]) -> str:
         """
         Format the rows for the LLM prompt.
@@ -357,3 +415,10 @@ class TableProcessor:
             rows_snippet += ",\n " + str(row)
         rows_snippet += "]"
         return rows_snippet
+
+
+
+
+
+# In design_schema method, instead of generating pydantic schema, generate SQL schema for different dialects like sqlite, mysql, postgresql, etc.
+# In transform_data method, instead of generating a json object, generate a SQL query that can be used to insert the data into the database, then run the query to check if the data is inserted correctly.
