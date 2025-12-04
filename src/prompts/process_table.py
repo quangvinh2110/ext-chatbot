@@ -53,6 +53,13 @@ Return a single JSON object inside a ```json ... ``` block.
 """.strip()
 
 
+GROUP_COLUMNS_TEMPLATE = """
+# I will fill this prompt later
+
+### Table Data Snippet:
+{{table_data_snippet}}
+""".strip()
+
 DESIGN_SCHEMA_TEMPLATE = """
 You are an expert Data Engineer and Python Pydantic Specialist. Your task is to analyze a raw snippet of tabular data, then design a new, enhanced schema for a data analysis phase.
 
@@ -67,8 +74,8 @@ Output a Pydantic-compliant JSON schema that prepares the data for the next data
 *   Look at each column in the `DATA_SNIPPET` to determine the best data type for a database or downstream analysis. For instance, if a column's values are dates (e.g., "dd/mm/yyyy"), use a `datetime` type; if they are numeric, use `float` or `int`. Avoid defaulting to `string` if a more specific type is suitable.
 *   Restructure for Analysis:
     *   Identify Patterns: Look for string columns that contain complex, multi-part data.
-    *   The Component Extraction Rule: Determine if you can reliably extract common, meaningful components from the majority of the rows. For each found component, you must verify that component is consistent across ALL rows. If only a few values have the same component while the majority do not, the component is not general enough. In this case, do NOT split the column. But if all values have the same component, then you can create a new column with the component as the value.
-    *   Preserve Originals: When you do split a column, you must keep the original column in the schema in addition to the new, smaller columns you create.
+    *   The Component Extraction Rule: Determine if you can reliably extract common, meaningful components from the majority of the rows. For each found component, you must verify that component is consistent across ALL rows. If only a few values have the same component while the majority do not, the component is not general enough. In this case, do NOT add new column. But if all values have the same component, then you can create a new column with the component as the value.
+    *   Preserve Originals: You must keep the original column in the schema in addition to the new columns you create.
 *   For every field (both original and new), add a concise Vietnamese description. The description must explain the field's purpose and include approximately 3 example values from the data.
 
 ### Output Format:
@@ -90,7 +97,6 @@ Explanation: # your explanation of the decision here
       },
       ...
   },
-  "required": ["Tên cột 1", "Tên cột 2"]
 }
 ```
 

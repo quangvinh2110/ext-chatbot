@@ -80,17 +80,19 @@ class TableProcessor:
         print(header_footer_info)
 
         header_footer_info["generated_header"] = None
-        if not header_footer_info["header_indices"]:
+        header_indices = header_footer_info["header_indices"] or []
+        footer_indices = header_footer_info.get("footer_indices") or []
+
+        if not header_indices:
             print("Generating header...")
             generated_header = self.generate_header(table_rows, max_retries)
             print(generated_header)
             header_footer_info["generated_header"] = generated_header
-            header_rows = [generated_header]
+            formatted_header = generated_header
         else:
-            header_rows = [table_rows[i] for i in header_footer_info["header_indices"]]
+            header_rows = [table_rows[i] for i in header_indices]
+            formatted_header = self._format_header_rows(header_rows)
 
-        header_indices = header_footer_info["header_indices"] or []
-        footer_indices = header_footer_info.get("footer_indices") or []
 
         data_rows = []
         for i, row in enumerate(table_rows):
@@ -102,24 +104,19 @@ class TableProcessor:
         
         print("Designing schema...")
         pydantic_schema = self.design_schema(
-            data_rows=data_rows, header_rows=header_rows, max_retries=max_retries
+            data_rows=data_rows, 
+            formatted_header=formatted_header, 
+            max_retries=max_retries
         )
         print(pydantic_schema)
 
-        formatted_header = self._format_header_rows(header_rows)
-        if self._columns_match(formatted_header, data_rows, pydantic_schema):
-            transformed_data = [
-                {column: val for column, val in zip(formatted_header, row)}
-                for row in data_rows
-            ]
-        else:
-            print("Transforming data...")
-            transformed_data = asyncio.run(self.transform_data(
-                data_rows=data_rows, 
-                header_rows=header_rows, 
-                pydantic_schema=pydantic_schema, 
-                max_retries=max_retries
-            ))
+        print("Transforming data...")
+        transformed_data = asyncio.run(self.transform_data(
+            data_rows=data_rows, 
+            formatted_header=formatted_header, 
+            pydantic_schema=pydantic_schema, 
+            max_retries=max_retries
+        ))
 
         return {
             "header_footer_info": header_footer_info,
@@ -180,7 +177,7 @@ class TableProcessor:
         max_retries: int = 3,
     ) -> List[str]:
         snippet = self._format_table_data_snippet_with_header(
-            header_rows=[[f"col{i}" for i in range(len(table_rows[0]))]],
+            formatted_header=[f"col{i}" for i in range(len(table_rows[0]))],
             data_rows=table_rows,
         )
         prompt = GENERATE_HEADER_TEMPLATE.replace(
@@ -221,13 +218,13 @@ class TableProcessor:
     def design_schema(
         self,
         data_rows: List[List[Any]],
-        header_rows: List[List[str]],
+        formatted_header: List[str],
         max_retries: int = 3,
     ) -> Dict[str, Any]:
-        num_samples = min(10, len(data_rows))
+        num_samples = min(5, len(data_rows))
         sample_rows = random.sample(data_rows, num_samples)
         snippet = self._format_table_data_snippet_with_header(
-            header_rows=header_rows,
+            formatted_header=formatted_header,
             data_rows=sample_rows,
         )
         
@@ -265,63 +262,96 @@ class TableProcessor:
     async def transform_data(
         self,
         data_rows: List[List[Any]],
-        header_rows: List[List[str]],
+        formatted_header: List[str],
         pydantic_schema: Dict[str, Any],
         max_retries: int = 3
     ) -> List[Dict[str, Any]]:
         """
         Transform all data rows in the table to the schema defined in pydantic_schema.
         """
-        queue: List[Tuple[int, List[Any]]] = []
-        for i, row in enumerate(data_rows):
-            queue.append((i, row))
-            
-        results = []
-        for attempt in range(max_retries):
-            if not queue:
-                break
+        # Find common columns
+        common_columns = self._find_common_columns(
+            formatted_header=formatted_header,
+            data_rows=data_rows,
+            pydantic_schema=pydantic_schema,
+        )
+        # Reduce pydantic schema to only include non-common columns
+        reduced_pydantic_schema = {k: v for k, v in pydantic_schema.items() if k != "properties"}
+        reduced_pydantic_schema["properties"] = {k: v for k, v in pydantic_schema["properties"].items() if k not in common_columns}
+        if "required" in reduced_pydantic_schema:
+            reduced_pydantic_schema["required"] = [
+                col for col in reduced_pydantic_schema["required"] 
+                if col not in common_columns
+            ]
+
+        if reduced_pydantic_schema["properties"]:
+            queue: List[Tuple[int, List[Any]]] = []
+            for i, row in enumerate(data_rows):
+                queue.append((i, row))
                 
-            print(f"Attempt {attempt + 1}/{max_retries}: Processing {len(queue)} rows...")
-            
-            # Process batch
-            batch_results = await self._transform_batch(
-                queue, 
-                header_rows, 
-                pydantic_schema,
-            )
-            
-            # Collect successes and prepare retries
-            successful_results = []
-            failed_items = []
-            
-            for res in batch_results:
-                if res["success"]:
-                    successful_results.append(res)
-                else:
-                    failed_items.append(res["input_item"])
+            results = []
+            for attempt in range(max_retries):
+                if not queue:
+                    break
                     
-            results.extend(successful_results)
-            queue = failed_items
-            
-            if not queue:
-                break
+                print(f"Attempt {attempt + 1}/{max_retries}: Processing {len(queue)} rows...")
                 
-        # Sort results by original index to maintain order
-        results.sort(key=lambda x: x["input_item"][0])
+                # Process batch
+                batch_results = await self._transform_batch(
+                    queue, 
+                    formatted_header, 
+                    reduced_pydantic_schema,
+                )
+                
+                # Collect successes and prepare retries
+                successful_results = []
+                failed_items = []
+                
+                for res in batch_results:
+                    if res["success"]:
+                        successful_results.append(res)
+                    else:
+                        failed_items.append(res["input_item"])
+                        
+                results.extend(successful_results)
+                queue = failed_items
+                
+                if not queue:
+                    break
+                
+            # Sort results by original index to maintain order
+            results.sort(key=lambda x: x["input_item"][0])
+        else:
+            # If no properties, return empty rows
+            results = [
+                {
+                    "success": True,
+                    "error": None,
+                    "transformed_row": {},
+                    "input_item": (i, row)
+                }
+                for i, row in enumerate(data_rows)
+            ]
+
+        # Merge common columns
+        for result in results:
+            for col in common_columns:
+                val_mapping = {k: v for k, v in zip(formatted_header, result["input_item"][1])}
+                result["transformed_row"][col] = val_mapping[col]
         
         # Return just the transformed data
-        return [r["transformed_data"] for r in results]
+        return [result["transformed_row"] for result in results]
 
 
     async def _transform_batch(
         self,
         queue: List[Tuple[int, List[Any]]],
-        header_rows: List[List[str]],
+        formatted_header: List[str],
         pydantic_schema: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         semaphore = asyncio.Semaphore(self.max_concurrent_requests)
         tasks = [
-            self._transform_single_row(index, row, header_rows, pydantic_schema, semaphore)
+            self._transform_single_row(index, row, formatted_header, pydantic_schema, semaphore)
             for index, row in queue
         ]
         return await tqdm_asyncio.gather(*tasks, desc="Transforming data")
@@ -331,13 +361,13 @@ class TableProcessor:
         self,
         index: int,
         data_row: List[Any],
-        header_rows: List[List[str]],
+        formatted_header: List[str],
         pydantic_schema: Dict[str, Any],
         semaphore: asyncio.Semaphore,
     ) -> Dict[str, Any]:
         await semaphore.acquire()
         try:
-            raw_row = self._format_table_data_snippet_with_header(header_rows, [data_row])
+            raw_row = self._format_table_data_snippet_with_header(formatted_header, [data_row])
             prompt = TRANSFORM_DATA_TEMPLATE.replace(
                 "{{raw_row}}", raw_row
             ).replace(
@@ -361,14 +391,14 @@ class TableProcessor:
             if not content:
                  raise ValueError("Empty response from LLM")
 
-            transformed_data = self._extract_json(content)
-            if transformed_data.keys() != pydantic_schema["properties"].keys():
-                raise ValueError("Transformed data keys do not match pydantic schema keys")
+            transformed_row = self._extract_json(content)
+            if transformed_row.keys() != pydantic_schema["properties"].keys():
+                raise ValueError("Transformed row keys do not match pydantic schema keys")
                  
             return {
                 "success": True,
                 "error": None,
-                "transformed_data": transformed_data, # Parse JSON
+                "transformed_row": transformed_row, # Parse JSON
                 "input_item": (index, data_row),
             }
             
@@ -376,7 +406,7 @@ class TableProcessor:
             return {
                 "success": False,
                 "error": str(e), # Error message
-                "transformed_data": None,
+                "transformed_row": None,
                 "input_item": (index, data_row),
             }
         finally:
@@ -429,7 +459,7 @@ class TableProcessor:
 
     def _format_table_data_snippet_with_header(
         self,
-        header_rows: List[List[str]],
+        formatted_header: List[str],
         data_rows: List[List[Any]],
         sample_size: int = 5,
     ) -> str:
@@ -437,7 +467,6 @@ class TableProcessor:
         Format a snippet of the table data for the LLM prompt.
         Shows the header rows and the first `sample_size` rows.
         """
-        formatted_header = self._format_header_rows(header_rows)
         if len(data_rows) == 1:
             return json.dumps(
                 {column: val for column, val in zip(formatted_header, data_rows[0])}, ensure_ascii=False
@@ -493,7 +522,14 @@ class TableProcessor:
         return ["_".join(list(header_col)) for header_col in zip(*header_rows)]
 
 
-    def _find_original_column_types(self, formatted_header: List[str], data_rows: List[List[Any]]) -> Dict[str, str]:
+    def _find_original_column_types(
+        self, 
+        formatted_header: List[str], 
+        data_rows: List[List[Any]],
+    ) -> Dict[str, str]:
+        """
+        Find the original column types from the data rows.
+        """
         if not data_rows or not formatted_header:
             return {}
         
@@ -517,36 +553,42 @@ class TableProcessor:
         return column_types
 
 
-    def _columns_match(self, formatted_header: List[str], data_rows: List[List[Any]], pydantic_schema: Dict[str, Any]) -> bool:
+    def _find_common_columns(
+        self, 
+        formatted_header: List[str], 
+        data_rows: List[List[Any]], 
+        pydantic_schema: Dict[str, Any],
+    ) -> List[str]:
         """
         Check if column names and types match between formatted header and pydantic schema.
         
         Args:
-            formatted_header: List of column names from the header
-            data_rows: List of data rows to infer types from
-            pydantic_schema: Pydantic schema dictionary
+            formatted_header: List of original column names from the header
+            data_rows: List of data rows to find original column types from
+            pydantic_schema: New pydantic schema dictionary
             
         Returns:
-            True if both column names and types match, False otherwise
+            List of common columns if they exist, otherwise empty list
         """
+        common_columns = []
+
         # First check if column names match
         schema_properties = pydantic_schema.get("properties", {})
-        schema_column_names = set(schema_properties.keys())
-        header_column_names = set(formatted_header)
-        
-        if schema_column_names != header_column_names or len(schema_column_names) != len(formatted_header):
-            return False
+        for col_name in formatted_header:
+            if col_name in schema_properties.keys():
+                common_columns.append(col_name)
         
         # If names match, check types
         original_column_types = self._find_original_column_types(formatted_header, data_rows)
         
-        for col_name in formatted_header:
+        for col_name in common_columns:
             schema_type_str = schema_properties[col_name].get("type", "unknown")
             if schema_type_str == original_column_types[col_name]:
                 continue
-            return False
+            else:
+                common_columns.remove(col_name)
         
-        return True
+        return common_columns
 
 
 
