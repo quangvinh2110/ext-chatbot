@@ -127,6 +127,7 @@ class TableInfo:
     num_cols: int
     num_data_rows: int
     merged_cells: List[MergedCellInfo]
+    sheet_name: str
     
     @property
     def shape(self) -> Tuple[int, int]:
@@ -404,7 +405,8 @@ class TableDetector:
     
     def detect_tables(self, 
                      df_full: pd.DataFrame, 
-                     merged_cells: List[MergedCellInfo]) -> List[TableInfo]:
+                     merged_cells: List[MergedCellInfo],
+                     sheet_name: str) -> List[TableInfo]:
         """
         Detect all tables in the DataFrame.
         
@@ -420,6 +422,8 @@ class TableDetector:
                 The full DataFrame containing one or more tables.
             merged_cells (List[MergedCellInfo]): 
                 List of merged cell information for associating merges with tables.
+            sheet_name (str):
+                Name of the sheet being processed.
         
         Returns:
             List[TableInfo]: List of TableInfo objects, one for each detected table.
@@ -427,7 +431,7 @@ class TableDetector:
         
         Examples:
             >>> detector = TableDetector()
-            >>> tables = detector.detect_tables(df_full, merged_cells)
+            >>> tables = detector.detect_tables(df_full, merged_cells, "Sheet1")
             >>> for i, table in enumerate(tables):
             ...     print(f"Table {i+1}: {table.shape} at rows {table.start_row}-{table.end_row}")
         """
@@ -441,7 +445,7 @@ class TableDetector:
                 continue
             
             # Try to extract a table
-            table_info = self._extract_table(df_full, current_row, merged_cells)
+            table_info = self._extract_table(df_full, current_row, merged_cells, sheet_name)
             
             if table_info is not None:
                 tables.append(table_info)
@@ -454,7 +458,8 @@ class TableDetector:
     def _extract_table(self, 
                       df_full: pd.DataFrame, 
                       start_row: int,
-                      merged_cells: List[MergedCellInfo]) -> Optional[TableInfo]:
+                      merged_cells: List[MergedCellInfo],
+                      sheet_name: str) -> Optional[TableInfo]:
         """
         Extract a single table starting from start_row.
         
@@ -467,6 +472,7 @@ class TableDetector:
             df_full (pd.DataFrame): The full DataFrame to extract from.
             start_row (int): The starting row index (0-based) to begin extraction.
             merged_cells (List[MergedCellInfo]): List of merged cell information.
+            sheet_name (str): Name of the sheet being processed.
         
         Returns:
             Optional[TableInfo]: TableInfo object if a valid table is found,
@@ -476,7 +482,7 @@ class TableDetector:
                 - Table has no data rows
         
         Examples:
-            >>> table_info = detector._extract_table(df_full, 0, merged_cells)
+            >>> table_info = detector._extract_table(df_full, 0, merged_cells, "Sheet1")
             >>> if table_info:
             ...     print(f"Extracted table with {table_info.num_cols} columns")
         """
@@ -533,7 +539,8 @@ class TableDetector:
             start_col=0,
             num_cols=num_cols,
             num_data_rows=num_data_rows,
-            merged_cells=table_merged_cells
+            merged_cells=table_merged_cells,
+            sheet_name=sheet_name
         )
 
     @staticmethod
@@ -695,7 +702,8 @@ class ExcelParser:
         # Detect and extract tables
         self._tables = self.table_detector.detect_tables(
             self._df_full, 
-            self._merged_cells
+            self._merged_cells,
+            str(sheet_name)
         )
         
         return self._tables

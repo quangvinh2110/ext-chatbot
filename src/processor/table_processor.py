@@ -6,23 +6,18 @@ import asyncio
 from typing import Optional, Dict, Any, List, Tuple
 from openai import OpenAI, AsyncOpenAI
 from tqdm.asyncio import tqdm_asyncio
-from pydantic import BaseModel
 
 from ..parser.excel_parser import TableInfo
 from ..prompts import (
     TRANSFORM_DATA_TEMPLATE,
     IDENTIFY_HEADER_FOOTER_TEMPLATE,
-    DESIGN_SCHEMA_TEMPLATE
+    DESIGN_SCHEMA_TEMPLATE,
+    GENERATE_HEADER_TEMPLATE
 )
 from ..utils import set_seed
 
 
 set_seed(42)
-
-
-class HeaderFooterInfo(BaseModel):
-    header_indices: List[int]
-    footer_indices: List[int]
 
 
 class TableProcessor:
@@ -65,7 +60,7 @@ class TableProcessor:
         
         self.json_pattern = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
 
-    async def __call__(
+    def __call__(
         self,
         table: TableInfo,
         max_retries: int = 5,
@@ -79,26 +74,52 @@ class TableProcessor:
         Returns:
             Dict containing 'structure_info' and 'transformed_data'.
         """
+        table_rows = table.data.tolist()
         print("Identifying header and footer...")
-        header_footer_info = self.identify_header_footer(table, max_retries)
+        header_footer_info = self.identify_header_footer(table_rows, max_retries)
+        print(header_footer_info)
+
+        header_footer_info["generated_header"] = None
+        if not header_footer_info["header_indices"]:
+            print("Generating header...")
+            generated_header = self.generate_header(table_rows, max_retries)
+            print(generated_header)
+            header_footer_info["generated_header"] = generated_header
+            header_rows = [generated_header]
+        else:
+            header_rows = [table_rows[i] for i in header_footer_info["header_indices"]]
+
+        header_indices = header_footer_info["header_indices"] or []
+        footer_indices = header_footer_info.get("footer_indices") or []
+
+        data_rows = []
+        for i, row in enumerate(table_rows):
+            if i not in header_indices and i not in footer_indices:
+                data_rows.append(row)
+        
+        if not data_rows:
+            raise ValueError("No rows to process. Please re-check the header and footer indices.")
         
         print("Designing schema...")
-        pydantic_schema = self.design_schema(table, header_footer_info, max_retries)
+        pydantic_schema = self.design_schema(
+            data_rows=data_rows, header_rows=header_rows, max_retries=max_retries
+        )
         print(pydantic_schema)
 
-        print("Transforming data...")
-        # transformed_data = asyncio.run(self.transform_data(
-        #     table, 
-        #     header_footer_info, 
-        #     pydantic_schema, 
-        #     max_retries
-        # ))
-        transformed_data = await self.transform_data(
-            table, 
-            header_footer_info, 
-            pydantic_schema, 
-            max_retries
-        )
+        formatted_header = self._format_header_rows(header_rows)
+        if self._columns_match(formatted_header, data_rows, pydantic_schema):
+            transformed_data = [
+                {column: val for column, val in zip(formatted_header, row)}
+                for row in data_rows
+            ]
+        else:
+            print("Transforming data...")
+            transformed_data = asyncio.run(self.transform_data(
+                data_rows=data_rows, 
+                header_rows=header_rows, 
+                pydantic_schema=pydantic_schema, 
+                max_retries=max_retries
+            ))
 
         return {
             "header_footer_info": header_footer_info,
@@ -109,15 +130,14 @@ class TableProcessor:
 
     def identify_header_footer(
         self,
-        table: TableInfo,
+        table_rows: List[List[Any]],
         max_retries: int = 3,
     ) -> Dict[str, Any]:
-        snippet = self._format_table_data_snippet(table.data.tolist())
+        snippet = self._format_table_data_snippet(table_rows)
         prompt = IDENTIFY_HEADER_FOOTER_TEMPLATE.replace(
             "{{table_data_snippet}}",
             snippet
         )
-
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -130,16 +150,22 @@ class TableProcessor:
                         "chat_template_kwargs": {'enable_thinking': False},
                         "top_k": 20,
                         "mip_p": 0,
-                        "guided_json": HeaderFooterInfo.model_json_schema(),
                     },
-                    timeout=10,
+                    timeout=20,
                 )
                 
                 content = response.choices[0].message.content
                 if content is None:
                     raise ValueError("LLM returned empty content")
+                
+                header_footer_info = self._extract_json(content)
+                if "header_indices" not in header_footer_info or "footer_indices" not in header_footer_info:
+                    raise ValueError("Failed to identify header and footer")
                     
-                return json.loads(content)
+                return {
+                    "header_indices": header_footer_info["header_indices"],
+                    "footer_indices": header_footer_info["footer_indices"],
+                }
             
             except Exception as e:
                 print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
@@ -148,28 +174,66 @@ class TableProcessor:
         return {"header_indices": None, "footer_indices": None}
         
 
-    def design_schema(
+    def generate_header(
         self,
-        table: TableInfo,
-        header_footer_info: Dict[str, Any],
+        table_rows: List[List[Any]],
         max_retries: int = 3,
-    ) -> Dict[str, Any]:
-        header_indices = header_footer_info.get("header_indices") or []
-        footer_indices = header_footer_info.get("footer_indices") or []
-        header_rows = [table.data[i].tolist() for i in header_indices] if header_indices else []
-        formatted_header = self._format_rows(header_rows) if header_rows else "null"
-
-        data_list = [
-            table.data.tolist()[i] for i in range(len(table.data)) if i not in (header_indices + footer_indices)
-        ]
-        snippet = self._format_rows(random.sample(data_list, 5))
-        
-        prompt = DESIGN_SCHEMA_TEMPLATE.replace(
-            "{{header}}", formatted_header
-        ).replace(
+    ) -> List[str]:
+        snippet = self._format_table_data_snippet_with_header(
+            header_rows=[[f"col{i}" for i in range(len(table_rows[0]))]],
+            data_rows=table_rows,
+        )
+        prompt = GENERATE_HEADER_TEMPLATE.replace(
             "{{table_data_snippet}}", snippet
         )
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    top_p=0.8,
+                    presence_penalty=1,
+                    extra_body = {
+                        "chat_template_kwargs": {'enable_thinking': False},
+                        "top_k": 20,
+                        "mip_p": 0,
+                    },
+                    timeout=10,
+                )
+                
+                content = response.choices[0].message.content
+                if content is None:
+                    raise ValueError("LLM returned empty content")
+                generated_header = self._extract_json(content)
+                if "generated_header" not in generated_header or not generated_header["generated_header"]:
+                    raise ValueError("Generated header not found in response")
+                elif len(generated_header["generated_header"]) != len(table_rows[0]):
+                    raise ValueError("Generated header does not match the number of columns in the table")
+                return generated_header["generated_header"]
+            except Exception as e:
+                print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+                continue
+                
+        raise ValueError("Failed to process request after max retries")
+
+
+    def design_schema(
+        self,
+        data_rows: List[List[Any]],
+        header_rows: List[List[str]],
+        max_retries: int = 3,
+    ) -> Dict[str, Any]:
+        num_samples = min(10, len(data_rows))
+        sample_rows = random.sample(data_rows, num_samples)
+        snippet = self._format_table_data_snippet_with_header(
+            header_rows=header_rows,
+            data_rows=sample_rows,
+        )
         
+        prompt = DESIGN_SCHEMA_TEMPLATE.replace(
+            "{{table_data_snippet}}", snippet
+        )
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -200,34 +264,19 @@ class TableProcessor:
         
     async def transform_data(
         self,
-        table: TableInfo,
-        header_footer_info: Dict[str, Any],
+        data_rows: List[List[Any]],
+        header_rows: List[List[str]],
         pydantic_schema: Dict[str, Any],
         max_retries: int = 3
     ) -> List[Dict[str, Any]]:
         """
         Transform all data rows in the table to the schema defined in pydantic_schema.
         """
-        data_list = table.data.tolist()
-        header_indices = header_footer_info.get("header_indices") or []
-        footer_indices = header_footer_info.get("footer_indices") or []
-        
-        # Get header rows for context
-        header_rows = [data_list[i] for i in header_indices]
-        formatted_header = self._format_rows(header_rows)
-        
-        # Identify rows to process
-        rows_to_process = []
-        for i, row in enumerate(data_list):
-            if i not in header_indices and i not in footer_indices:
-                rows_to_process.append((i, row))
-                
-        if not rows_to_process:
-            return []
+        queue: List[Tuple[int, List[Any]]] = []
+        for i, row in enumerate(data_rows):
+            queue.append((i, row))
             
         results = []
-        queue = rows_to_process
-
         for attempt in range(max_retries):
             if not queue:
                 break
@@ -237,7 +286,7 @@ class TableProcessor:
             # Process batch
             batch_results = await self._transform_batch(
                 queue, 
-                formatted_header, 
+                header_rows, 
                 pydantic_schema,
             )
             
@@ -266,14 +315,14 @@ class TableProcessor:
 
     async def _transform_batch(
         self,
-        batch_items: List[Tuple[int, List[Any]]],
-        formatted_header: str,
+        queue: List[Tuple[int, List[Any]]],
+        header_rows: List[List[str]],
         pydantic_schema: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         semaphore = asyncio.Semaphore(self.max_concurrent_requests)
         tasks = [
-            self._transform_single_row(index, row, formatted_header, pydantic_schema, semaphore)
-            for index, row in batch_items
+            self._transform_single_row(index, row, header_rows, pydantic_schema, semaphore)
+            for index, row in queue
         ]
         return await tqdm_asyncio.gather(*tasks, desc="Transforming data")
 
@@ -281,23 +330,19 @@ class TableProcessor:
     async def _transform_single_row(
         self,
         index: int,
-        row: List[Any],
-        formatted_header: str,
+        data_row: List[Any],
+        header_rows: List[List[str]],
         pydantic_schema: Dict[str, Any],
         semaphore: asyncio.Semaphore,
     ) -> Dict[str, Any]:
         await semaphore.acquire()
         try:
-            row_snippet = self._format_rows([row])
-            
+            raw_row = self._format_table_data_snippet_with_header(header_rows, [data_row])
             prompt = TRANSFORM_DATA_TEMPLATE.replace(
-                "{{raw_header}}", formatted_header
+                "{{raw_row}}", raw_row
             ).replace(
-                "{{raw_row}}", row_snippet
-            ).replace(
-                "{{pydantic_schema}}", str(pydantic_schema)
+                "{{pydantic_schema}}", json.dumps(pydantic_schema, ensure_ascii=False)
             )
-            
             response = await self.async_client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
@@ -308,7 +353,6 @@ class TableProcessor:
                     "chat_template_kwargs": {'enable_thinking': False},
                     "top_k": 20,
                     "mip_p": 0,
-                    # "guided_json": pydantic_schema
                 },
                 timeout=10,
             )
@@ -325,7 +369,7 @@ class TableProcessor:
                 "success": True,
                 "error": None,
                 "transformed_data": transformed_data, # Parse JSON
-                "input_item": (index, row),
+                "input_item": (index, data_row),
             }
             
         except Exception as e:
@@ -333,7 +377,7 @@ class TableProcessor:
                 "success": False,
                 "error": str(e), # Error message
                 "transformed_data": None,
-                "input_item": (index, row),
+                "input_item": (index, data_row),
             }
         finally:
             semaphore.release()
@@ -341,7 +385,7 @@ class TableProcessor:
 
     def _format_table_data_snippet(
         self,
-        data_list: List[List[Any]],
+        table_rows: List[List[Any]],
         sample_size: int = 3,
     ) -> str:
         """
@@ -349,11 +393,11 @@ class TableProcessor:
         Shows the first `sample_size` rows and the last `sample_size` rows.
         """
         table_data_snippet = "["
-        total_rows = len(data_list)
+        total_rows = len(table_rows)
         
         # If table is small enough, just show the whole thing
         if total_rows <= (sample_size * 3):
-            for i, row in enumerate(data_list):
+            for i, row in enumerate(table_rows):
                 table_data_snippet += str(row)
                 if i < total_rows - 1:
                     table_data_snippet += ",\n "
@@ -361,27 +405,52 @@ class TableProcessor:
             return table_data_snippet
 
         # Format top rows
-        top_rows = data_list[:sample_size]
+        top_rows = table_rows[:sample_size]
         table_data_snippet += str(top_rows[0])
         for row in top_rows[1:]:
             table_data_snippet += (",\n "+str(row))
 
         # Format middle rows
         middle_rows = random.sample(
-            data_list[sample_size:-sample_size], 
+            table_rows[sample_size:-sample_size], 
             sample_size
         )
         for row in middle_rows:
             table_data_snippet += (",\n "+str(row))
                 
         # Format bottom rows
-        bottom_rows = data_list[-sample_size:]
+        bottom_rows = table_rows[-sample_size:]
         table_data_snippet += ",\n ...\n " + str(bottom_rows[0])
         for row in bottom_rows[1:]:
             table_data_snippet += (",\n "+str(row))
         table_data_snippet += "]"
         return table_data_snippet
 
+
+    def _format_table_data_snippet_with_header(
+        self,
+        header_rows: List[List[str]],
+        data_rows: List[List[Any]],
+        sample_size: int = 5,
+    ) -> str:
+        """
+        Format a snippet of the table data for the LLM prompt.
+        Shows the header rows and the first `sample_size` rows.
+        """
+        formatted_header = self._format_header_rows(header_rows)
+        if len(data_rows) == 1:
+            return json.dumps(
+                {column: val for column, val in zip(formatted_header, data_rows[0])}, ensure_ascii=False
+            )
+        else:
+            sample_size = min(sample_size, len(data_rows))
+            sample_rows = random.sample(data_rows, sample_size)
+            return "\n".join([
+                json.dumps(
+                    {column: val for column, val in zip(formatted_header, sample_row)}, ensure_ascii=False
+                )
+                for sample_row in sample_rows
+            ])
 
     def _extract_json(self, content: str) -> Dict[str, Any]:
         """
@@ -416,6 +485,68 @@ class TableProcessor:
         rows_snippet += "]"
         return rows_snippet
 
+
+    def _format_header_rows(self, header_rows: List[List[Any]]) -> List[str]:
+        """
+        Format the header rows for the LLM prompt.
+        """
+        return ["_".join(list(header_col)) for header_col in zip(*header_rows)]
+
+
+    def _find_original_column_types(self, formatted_header: List[str], data_rows: List[List[Any]]) -> Dict[str, str]:
+        if not data_rows or not formatted_header:
+            return {}
+        
+        column_types: Dict[str, str] = {}
+        for col_name, col_values in zip(formatted_header, zip(*data_rows)):
+            if all(val is None or isinstance(val, str) for val in col_values):
+                column_types[col_name] = "string"
+                continue
+            elif all(val is None or isinstance(val, int) for val in col_values):
+                column_types[col_name] = "integer"
+                continue
+            elif all(val is None or isinstance(val, float) for val in col_values):
+                column_types[col_name] = "number"
+                continue
+            elif all(val is None or isinstance(val, bool) for val in col_values):
+                column_types[col_name] = "boolean"
+                continue
+            else:
+                column_types[col_name] = "unknown"
+        
+        return column_types
+
+
+    def _columns_match(self, formatted_header: List[str], data_rows: List[List[Any]], pydantic_schema: Dict[str, Any]) -> bool:
+        """
+        Check if column names and types match between formatted header and pydantic schema.
+        
+        Args:
+            formatted_header: List of column names from the header
+            data_rows: List of data rows to infer types from
+            pydantic_schema: Pydantic schema dictionary
+            
+        Returns:
+            True if both column names and types match, False otherwise
+        """
+        # First check if column names match
+        schema_properties = pydantic_schema.get("properties", {})
+        schema_column_names = set(schema_properties.keys())
+        header_column_names = set(formatted_header)
+        
+        if schema_column_names != header_column_names or len(schema_column_names) != len(formatted_header):
+            return False
+        
+        # If names match, check types
+        original_column_types = self._find_original_column_types(formatted_header, data_rows)
+        
+        for col_name in formatted_header:
+            schema_type_str = schema_properties[col_name].get("type", "unknown")
+            if schema_type_str == original_column_types[col_name]:
+                continue
+            return False
+        
+        return True
 
 
 
