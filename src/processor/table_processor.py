@@ -12,7 +12,8 @@ from ..prompts import (
     TRANSFORM_DATA_TEMPLATE,
     IDENTIFY_HEADER_FOOTER_TEMPLATE,
     DESIGN_SCHEMA_TEMPLATE,
-    GENERATE_HEADER_TEMPLATE
+    GENERATE_HEADER_TEMPLATE,
+    GROUP_COLUMNS_TEMPLATE
 )
 from ..utils import set_seed
 
@@ -103,11 +104,11 @@ class TableProcessor:
             raise ValueError("No rows to process. Please re-check the header and footer indices.")
         
         print("Designing schema...")
-        pydantic_schema = self.design_schema(
+        pydantic_schema = asyncio.run(self.design_schema(
             data_rows=data_rows, 
             formatted_header=formatted_header, 
             max_retries=max_retries
-        )
+        ))
         print(pydantic_schema)
 
         print("Transforming data...")
@@ -215,12 +216,103 @@ class TableProcessor:
         raise ValueError("Failed to process request after max retries")
 
 
-    def design_schema(
+    async def design_schema(
         self,
         data_rows: List[List[Any]],
         formatted_header: List[str],
         max_retries: int = 3,
     ) -> Dict[str, Any]:
+        """
+        Design schema by first grouping columns by meaning, then designing schema for each group.
+        This prevents issues with too many columns degrading LLM performance.
+        """
+        # Step 1: Group columns by meaning
+        print("Grouping columns by meaning...")
+        column_groups = self.group_columns(
+            data_rows=data_rows,
+            formatted_header=formatted_header,
+            max_retries=max_retries
+        )
+        print(f"Found column groups: {column_groups}")
+
+        col_to_data_map: Dict[str, Tuple[Any]] = {
+            col: data 
+            for col, data in zip(formatted_header, zip(*data_rows))
+        }
+        data_groups = [
+            [
+                list(row) 
+                for row in zip(*[col_to_data_map[col] for col in group])
+            ]
+            for group in column_groups
+        ]
+        
+        # Step 2: Design schema for each group asynchronously
+        print("Designing schema for each group...")
+        queue: List[Tuple[List[List[Any]], List[str]]] = [
+            (data_group, column_group)
+            for data_group, column_group in zip(data_groups, column_groups)
+        ]
+
+        results = []
+        for attempt in range(max_retries):
+            if not queue:
+                break
+
+            print(f"Attempt {attempt + 1}/{max_retries}: Processing {len(queue)} groups...")
+            
+            # Process batch
+            batch_results = await self._design_schema_for_groups(queue)
+
+            # Collect successes and prepare retries
+            successful_results = []
+            failed_items = []
+            
+            for res in batch_results:
+                if res["success"]:
+                    successful_results.append(res)
+                else:
+                    failed_items.append(res["input_item"])
+                    
+            results.extend(successful_results)
+            queue = failed_items
+
+            if attempt == max_retries - 1 and queue:
+                errors = [res["error"] for res in batch_results if not res["success"]]
+                raise ValueError(
+                    "Failed to design schema for all groups after max retries"
+                    f", Errors from last attempt: {errors}"          
+                )
+
+        # Step 3: Merge all schemas
+        print("Merging schemas...")
+        merged_schema = self._merge_schemas([
+            result["pydantic_schema"] for result in results
+        ])
+        
+        return merged_schema
+    
+    
+    def group_columns(
+        self,
+        data_rows: List[List[Any]],
+        formatted_header: List[str],
+        max_retries: int = 3,
+    ) -> List[List[str]]:
+        """
+        Group columns by their semantic meaning using LLM.
+        
+        Args:
+            data_rows: List of data rows
+            formatted_header: List of column names
+            max_retries: Maximum number of retries
+            
+        Returns:
+            List of groups, where each group is a list of column names
+        """
+        if len(formatted_header) <= 8:
+            return [formatted_header]
+
         num_samples = min(5, len(data_rows))
         sample_rows = random.sample(data_rows, num_samples)
         snippet = self._format_table_data_snippet_with_header(
@@ -228,19 +320,21 @@ class TableProcessor:
             data_rows=sample_rows,
         )
         
-        prompt = DESIGN_SCHEMA_TEMPLATE.replace(
+        prompt = GROUP_COLUMNS_TEMPLATE.replace(
             "{{table_data_snippet}}", snippet
         )
+        
+        column_groups: List[List[str]] = []
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.6,
-                    top_p=0.95,
+                    temperature=0.7,
+                    top_p=0.8,
                     presence_penalty=1,
                     extra_body = {
-                        "chat_template_kwargs": {'enable_thinking': True},
+                        "chat_template_kwargs": {'enable_thinking': False},
                         "top_k": 20,
                         "mip_p": 0,
                     },
@@ -249,14 +343,168 @@ class TableProcessor:
                 content = response.choices[0].message.content
                 if content is None:
                     raise ValueError("LLM returned empty content")
-                    
-                return self._extract_json(content)
+
+                result = self._extract_json(content)
+                
+                # Validate the result
+                if not result.get("column_groups"):
+                    raise ValueError("Failed to group columns")
+                
+                column_groups = result["column_groups"]
+                
+                # Validate that all columns are included and no duplicates
+                all_columns_in_groups = []
+                for group in column_groups:
+                    all_columns_in_groups.extend(group)
+                
+                if set(all_columns_in_groups) != set(formatted_header):
+                    raise ValueError("Column groups do not match the original header")
+                
+                if len(all_columns_in_groups) != len(set(all_columns_in_groups)):
+                    raise ValueError("Duplicate columns found in groups")
+                
+                return column_groups
             
             except Exception as e:
                 print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
                 continue
+        
+        # Fallback: treat each column as its own group
+        print("Failed to group columns, falling back to the last result")
+        fixed_column_groups = []
+        all_columns_in_groups = []
+        for column_group in column_groups:
+            fixed_column_group = []
+            for column in column_group:
+                if column in formatted_header:
+                    fixed_column_group.append(column)
+                    all_columns_in_groups.append(column)
+            fixed_column_groups.append(fixed_column_group)
+        for column in formatted_header:
+            if column not in all_columns_in_groups:
+                fixed_column_groups.append([column])
+        return fixed_column_groups
+    
+    
+    async def _design_schema_for_groups(
+        self,
+        queue: List[Tuple[List[List[Any]], List[str]]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Design schema for each column group asynchronously.
+        
+        Args:
+            queue: List of data groups and column groups
+            
+        Returns:
+            List of schemas, one for each group
+        """
+        semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+        tasks = [
+            self._design_schema_for_single_group(
+                data_group=data_group,
+                column_group=column_group,
+                semaphore=semaphore
+            )
+            for data_group, column_group in queue
+        ]
+        return await tqdm_asyncio.gather(*tasks, desc="Designing schema for groups")
+    
+    
+    async def _design_schema_for_single_group(
+        self,
+        data_group: List[List[Any]],
+        column_group: List[str],
+        semaphore: asyncio.Semaphore,
+    ) -> Dict[str, Any]:
+        """
+        Design schema for a single column group.
+        
+        Args:
+            data_group: List of data rows
+            column_group: List of all column names
+            semaphore: Semaphore for rate limiting
+            
+        Returns:
+            Schema for this group
+        """
+        await semaphore.acquire()
+
+        snippet = self._format_table_data_snippet_with_header(
+            formatted_header=column_group,
+            data_rows=data_group,
+            sample_size=10,
+        )
+        prompt = DESIGN_SCHEMA_TEMPLATE.replace(
+            "{{table_data_snippet}}", snippet
+        )
+        try:
+            response = await self.async_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.6,
+                top_p=0.95,
+                presence_penalty=1,
+                extra_body = {
+                    "chat_template_kwargs": {'enable_thinking': True},
+                    "top_k": 20,
+                    "mip_p": 0,
+                },
+            )
+            
+            content = response.choices[0].message.content
+            if content is None:
+                raise ValueError("LLM returned empty content")
+            
+            return {
+                "input_item": (data_group, column_group),
+                "pydantic_schema": self._extract_json(content),
+                "error": None,
+                "success": True,
+            }
+        except Exception as e:
+            return {
+                "input_item": (data_group, column_group),
+                "pydantic_schema": None,
+                "error": str(e),
+                "success": False,
+            }
+        finally:
+            semaphore.release()
+
+    
+    def _merge_schemas(self, group_schemas: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Merge multiple schemas into a single schema.
+        
+        Args:
+            group_schemas: List of schemas from different groups
+            
+        Returns:
+            Merged schema
+        """
+        merged_schema: Dict[str, Any] = {
+            "title": "RowData",
+            "type": "object",
+        }
+        
+        # Merge properties from all schemas
+        all_properties: Dict[str, Any] = {}
+        for schema in group_schemas:
+            if "properties" in schema:
+                all_properties.update(schema["properties"])
+        merged_schema["properties"] = all_properties
                 
-        raise ValueError("Failed to process request after max retries")
+        # Merge required fields if they exist
+        all_required = []
+        for schema in group_schemas:
+            if "required" in schema:
+                all_required.extend(schema["required"])
+        
+        if all_required:
+            merged_schema["required"] = list(set(all_required))
+        
+        return merged_schema
 
         
     async def transform_data(
@@ -315,10 +563,7 @@ class TableProcessor:
                         
                 results.extend(successful_results)
                 queue = failed_items
-                
-                if not queue:
-                    break
-                
+
             # Sort results by original index to maintain order
             results.sort(key=lambda x: x["input_item"][0])
         else:
@@ -480,6 +725,7 @@ class TableProcessor:
                 )
                 for sample_row in sample_rows
             ])
+
 
     def _extract_json(self, content: str) -> Dict[str, Any]:
         """

@@ -54,7 +54,20 @@ Return a single JSON object inside a ```json ... ``` block.
 
 
 GROUP_COLUMNS_TEMPLATE = """
-# I will fill this prompt later
+You are an expert Data Engineer. Your task is to group columns by their semantic meaning and relationship.
+
+### Goal:
+Analyze the table data and group columns that are semantically related or belong to the same topic/category. Note that each column must be included in exactly ONE AND ONLY ONE group.
+
+### Output Format:
+Return a single JSON object inside a ```json ... ``` block.
+{
+  "explanation": "Explanation of how you grouped the columns",
+  "column_groups": [
+    ["column1", "column2", "column3"],
+    ...
+  ]
+}
 
 ### Table Data Snippet:
 {{table_data_snippet}}
@@ -74,7 +87,8 @@ Output a Pydantic-compliant JSON schema that prepares the data for the next data
 *   Look at each column in the `DATA_SNIPPET` to determine the best data type for a database or downstream analysis. For instance, if a column's values are dates (e.g., "dd/mm/yyyy"), use a `datetime` type; if they are numeric, use `float` or `int`. Avoid defaulting to `string` if a more specific type is suitable.
 *   Restructure for Analysis:
     *   Identify Patterns: Look for string columns that contain complex, multi-part data.
-    *   The Component Extraction Rule: Determine if you can reliably extract common, meaningful components from the majority of the rows. For each found component, you must verify that component is consistent across ALL rows. If only a few values have the same component while the majority do not, the component is not general enough. In this case, do NOT add new column. But if all values have the same component, then you can create a new column with the component as the value.
+    *   The Component Extraction Rule: Determine if you can reliably extract common, meaningful components from the majority of the rows for the next analysis phase. For each found component, you must verify that component is consistent across ALL rows. If only a few values have the same component while the majority do not, the component is not general enough. In this case, do NOT add new column. But if all values have the same component, then you can create a new column with the component as the value.
+    *   New Column Naming: If you create a new column by extracting a component from an existing one, you must name it following the pattern: `original column name_component name`.
     *   Preserve Originals: You must keep the original column in the schema in addition to the new columns you create.
 *   For every field (both original and new), add a concise Vietnamese description. The description must explain the field's purpose and include approximately 3 example values from the data.
 
