@@ -102,11 +102,32 @@ class TableProcessor:
         
         if not data_rows:
             raise ValueError("No rows to process. Please re-check the header and footer indices.")
+
+        print("Grouping columns...")
+        column_groups = self.group_columns(
+            data_rows=data_rows,
+            formatted_header=formatted_header,
+            max_retries=max_retries
+        )
+        print(column_groups)
+
+        col_to_data_map: Dict[str, Tuple[Any]] = {
+            col: data 
+            for col, data in zip(formatted_header, zip(*data_rows))
+        }
+
+        data_groups = [
+            [
+                list(row)
+                for row in zip(*[col_to_data_map[col] for col in group])
+            ]
+            for group in column_groups
+        ]
         
         print("Designing schema...")
         pydantic_schema = asyncio.run(self.design_schema(
-            data_rows=data_rows, 
-            formatted_header=formatted_header, 
+            data_groups=data_groups, 
+            column_groups=column_groups, 
             max_retries=max_retries
         ))
         print(pydantic_schema)
@@ -218,42 +239,18 @@ class TableProcessor:
 
     async def design_schema(
         self,
-        data_rows: List[List[Any]],
-        formatted_header: List[str],
+        data_groups: List[List[List[Any]]],
+        column_groups: List[List[str]],
         max_retries: int = 3,
     ) -> Dict[str, Any]:
         """
-        Design schema by first grouping columns by meaning, then designing schema for each group.
-        This prevents issues with too many columns degrading LLM performance.
+        Design schema for each data group asynchronously.
         """
-        # Step 1: Group columns by meaning
-        print("Grouping columns by meaning...")
-        column_groups = self.group_columns(
-            data_rows=data_rows,
-            formatted_header=formatted_header,
-            max_retries=max_retries
-        )
-        print(f"Found column groups: {column_groups}")
 
-        col_to_data_map: Dict[str, Tuple[Any]] = {
-            col: data 
-            for col, data in zip(formatted_header, zip(*data_rows))
-        }
-        data_groups = [
-            [
-                list(row) 
-                for row in zip(*[col_to_data_map[col] for col in group])
-            ]
-            for group in column_groups
-        ]
-        
-        # Step 2: Design schema for each group asynchronously
-        print("Designing schema for each group...")
         queue: List[Tuple[List[List[Any]], List[str]]] = [
-            (data_group, column_group)
+            (data_group, column_group) 
             for data_group, column_group in zip(data_groups, column_groups)
         ]
-
         results = []
         for attempt in range(max_retries):
             if not queue:
@@ -350,7 +347,7 @@ class TableProcessor:
                 if not result.get("column_groups"):
                     raise ValueError("Failed to group columns")
                 
-                column_groups = result["column_groups"]
+                column_groups = [group["columns"] for group in result["column_groups"]]
                 
                 # Validate that all columns are included and no duplicates
                 all_columns_in_groups = []
