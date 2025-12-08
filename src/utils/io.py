@@ -24,6 +24,16 @@ def load_env(env_file_path: str = ".env") -> None:
         os.environ[key] = value
 
 
+def read_jsonl(file_path: str) -> List[dict]:
+    with open(file_path, 'r') as file:
+        return [json.loads(line) for line in file]
+
+
+def read_json(file_path: str) -> dict:
+    with open(file_path, 'r') as file:
+        return json.load(file)
+
+
 def write_jsonl(data: List[dict], file_path: str) -> None:
     with open(file_path, 'w', encoding='utf-8') as file:
         for item in data:

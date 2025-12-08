@@ -3,7 +3,8 @@ import json
 import os
 import random
 import asyncio
-from typing import Optional, Dict, Any, List, Tuple
+import collections
+from typing import Optional, Dict, Any, List, Tuple, Set
 from openai import OpenAI, AsyncOpenAI
 from tqdm.asyncio import tqdm_asyncio
 
@@ -13,13 +14,11 @@ from ..prompts import (
     IDENTIFY_HEADER_FOOTER_TEMPLATE,
     DESIGN_SCHEMA_TEMPLATE,
     GENERATE_HEADER_TEMPLATE,
-    GROUP_COLUMNS_TEMPLATE
 )
 from ..utils import set_seed
-
+from ..utils import compute_lcs_length
 
 set_seed(42)
-
 
 class TableProcessor:
     """
@@ -104,12 +103,19 @@ class TableProcessor:
             raise ValueError("No rows to process. Please re-check the header and footer indices.")
 
         print("Grouping columns...")
+        # column_groups = self.group_columns(
+        #     data_rows=data_rows,
+        #     formatted_header=formatted_header,
+        #     max_retries=max_retries
+        # )
         column_groups = self.group_columns(
             data_rows=data_rows,
             formatted_header=formatted_header,
-            max_retries=max_retries
+            sample_size=10,
+            lcs_threshold=5,
         )
         print(column_groups)
+        # exit()
 
         col_to_data_map: Dict[str, Tuple[Any]] = {
             col: data 
@@ -288,99 +294,233 @@ class TableProcessor:
         ])
         
         return merged_schema
+
+
+    def _are_columns_related(
+        self,
+        col1_data: List[Any], 
+        col2_data: List[Any],
+        lcs_threshold: int = 5,
+    ) -> bool:
+        """
+        Checks if two columns are related based on the LCS criteria.
+        """
+        for val1, val2 in zip(col1_data, col2_data):
+            str_val1 = str(val1).lower()
+            str_val2 = str(val2).lower()
+            
+            if not str_val1 or not str_val2:
+                continue
+                
+            if compute_lcs_length(str_val1, str_val2) >= lcs_threshold:
+                continue
+            elif str_val1 in str_val2 or str_val2 in str_val1:
+                continue
+            else:
+                return False
+            
+        return True
+
     
-    
+    def _merge_small_groups(
+        self, 
+        groups: List[List[str]], 
+        min_size: int = 3, 
+        max_size: int = 8,
+    ) -> List[List[str]]:
+        """
+        Merges small adjacent groups into larger groups.
+        """
+        if not groups: 
+            return []
+        merged_groups = []
+        i, n = 0, len(groups)
+        while i < n:
+            current_group = groups[i]
+            if len(current_group) < min_size:
+                new_group = list(current_group)
+                j = i + 1
+                while j < n:
+                    next_group = groups[j]
+                    if len(next_group) < min_size and (len(new_group) + len(next_group)) <= max_size:
+                        new_group.extend(next_group)
+                        j += 1
+                    else: 
+                        break
+                merged_groups.append(new_group)
+                i = j
+            else:
+                merged_groups.append(current_group)
+                i += 1
+        return merged_groups
+
+
     def group_columns(
         self,
         data_rows: List[List[Any]],
         formatted_header: List[str],
-        max_retries: int = 3,
+        sample_size: int = 10,
+        lcs_threshold: int = 5,
     ) -> List[List[str]]:
         """
-        Group columns by their semantic meaning using LLM.
-        
+        Groups columns by data similarity and then merges small adjacent groups.
+
+        Step 1: Performs a data-driven clustering based on Longest Common Substring
+                similarity over a sample of the data.
+        Step 2: Post-processes the result to merge adjacent groups that have fewer
+                than 3 columns, ensuring the merged group does not exceed 8 columns.
+
         Args:
-            data_rows: List of data rows
-            formatted_header: List of column names
-            max_retries: Maximum number of retries
-            
+            data_rows: A list of data rows.
+            formatted_header: A list of column names.
+            sample_size: The number of rows to sample for comparison.
+            lcs_threshold: The LCS length threshold for a value pair to be a match.
+            match_count_threshold: The number of matching rows needed to link columns.
+
         Returns:
-            List of groups, where each group is a list of column names
+            A list of cleaned and pragmatically sized column groups.
         """
-        if len(formatted_header) <= 8:
-            return [formatted_header]
+        if not formatted_header or not data_rows:
+            return []
 
-        num_samples = min(5, len(data_rows))
-        sample_rows = random.sample(data_rows, num_samples)
-        snippet = self._format_table_data_snippet_with_header(
-            formatted_header=formatted_header,
-            data_rows=sample_rows,
-        )
+        # --- Step 1: Initial Grouping (same as before) ---
+        actual_sample_size = min(len(data_rows), sample_size)
+        if actual_sample_size == 0:
+            return [[header] for header in formatted_header]
         
-        prompt = GROUP_COLUMNS_TEMPLATE.replace(
-            "{{table_data_snippet}}", snippet
-        )
-        
-        column_groups: List[List[str]] = []
-        for attempt in range(max_retries):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                    top_p=0.8,
-                    presence_penalty=1,
-                    extra_body = {
-                        "chat_template_kwargs": {'enable_thinking': False},
-                        "top_k": 20,
-                        "mip_p": 0,
-                    },
-                )
-                
-                content = response.choices[0].message.content
-                if content is None:
-                    raise ValueError("LLM returned empty content")
+        sampled_rows: List[List[Any]] = random.sample(data_rows, actual_sample_size)
+        num_cols: int = len(formatted_header)
+        sampled_column_data: Dict[str, List[Any]] = {h: [] for h in formatted_header}
+        for row in sampled_rows:
+            if len(row) == num_cols:
+                for i, header in enumerate(formatted_header):
+                    sampled_column_data[header].append(row[i])
 
-                result = self._extract_json(content)
-                
-                # Validate the result
-                if not result.get("column_groups"):
-                    raise ValueError("Failed to group columns")
-                
-                column_groups = [group["columns"] for group in result["column_groups"]]
-                
-                # Validate that all columns are included and no duplicates
-                all_columns_in_groups = []
-                for group in column_groups:
-                    all_columns_in_groups.extend(group)
-                
-                if set(all_columns_in_groups) != set(formatted_header):
-                    raise ValueError("Column groups do not match the original header")
-                
-                if len(all_columns_in_groups) != len(set(all_columns_in_groups)):
-                    raise ValueError("Duplicate columns found in groups")
-                
-                return column_groups
+        initial_groups: List[List[str]] = []
+        assigned_columns: Set[str] = set()
+
+        for start_col_name in formatted_header:
+            if start_col_name not in assigned_columns:
+                current_group = []
+                queue = collections.deque([start_col_name])
+                assigned_columns.add(start_col_name)
+                while queue:
+                    current_col_name = queue.popleft()
+                    current_group.append(current_col_name)
+                    for candidate_col_name in formatted_header:
+                        if candidate_col_name not in assigned_columns:
+                            if self._are_columns_related(
+                                sampled_column_data[current_col_name],
+                                sampled_column_data[candidate_col_name],
+                                lcs_threshold,
+                            ):
+                                assigned_columns.add(candidate_col_name)
+                                queue.append(candidate_col_name)
+                initial_groups.append(sorted(current_group))
+        
+        # --- Step 2: Merge the small groups ---
+        group_min_size: int = 3
+        group_max_size: int = 6
+        groups_to_merge: List[List[str]] = [group for group in initial_groups if len(group) < group_min_size]
+        final_groups: List[List[str]] = self._merge_small_groups(groups_to_merge, min_size=group_min_size, max_size=group_max_size)
+        for group in initial_groups:
+            if len(group) >= group_min_size:
+                final_groups.append(group)
+        
+        return final_groups
+    
+    
+    # def group_columns(
+    #     self,
+    #     data_rows: List[List[Any]],
+    #     formatted_header: List[str],
+    #     max_retries: int = 3,
+    # ) -> List[List[str]]:
+    #     """
+    #     Group columns by their semantic meaning using LLM.
+        
+    #     Args:
+    #         data_rows: List of data rows
+    #         formatted_header: List of column names
+    #         max_retries: Maximum number of retries
             
-            except Exception as e:
-                print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
-                continue
+    #     Returns:
+    #         List of groups, where each group is a list of column names
+    #     """
+    #     if len(formatted_header) <= 8:
+    #         return [formatted_header]
+
+    #     num_samples = min(5, len(data_rows))
+    #     sample_rows = random.sample(data_rows, num_samples)
+    #     snippet = self._format_table_data_snippet_with_header(
+    #         formatted_header=formatted_header,
+    #         data_rows=sample_rows,
+    #     )
         
-        # Fallback: treat each column as its own group
-        print("Failed to group columns, falling back to the last result")
-        fixed_column_groups = []
-        all_columns_in_groups = []
-        for column_group in column_groups:
-            fixed_column_group = []
-            for column in column_group:
-                if column in formatted_header:
-                    fixed_column_group.append(column)
-                    all_columns_in_groups.append(column)
-            fixed_column_groups.append(fixed_column_group)
-        for column in formatted_header:
-            if column not in all_columns_in_groups:
-                fixed_column_groups.append([column])
-        return fixed_column_groups
+    #     prompt = GROUP_COLUMNS_TEMPLATE.replace(
+    #         "{{table_data_snippet}}", snippet
+    #     )
+        
+    #     column_groups: List[List[str]] = []
+    #     for attempt in range(max_retries):
+    #         try:
+    #             response = self.client.chat.completions.create(
+    #                 model=self.model,
+    #                 messages=[{"role": "user", "content": prompt}],
+    #                 temperature=0.7,
+    #                 top_p=0.8,
+    #                 presence_penalty=1,
+    #                 extra_body = {
+    #                     "chat_template_kwargs": {'enable_thinking': False},
+    #                     "top_k": 20,
+    #                     "mip_p": 0,
+    #                 },
+    #             )
+                
+    #             content = response.choices[0].message.content
+    #             if content is None:
+    #                 raise ValueError("LLM returned empty content")
+
+    #             result = self._extract_json(content)
+                
+    #             # Validate the result
+    #             if not result.get("column_groups"):
+    #                 raise ValueError("Failed to group columns")
+                
+    #             column_groups = [group["columns"] for group in result["column_groups"]]
+                
+    #             # Validate that all columns are included and no duplicates
+    #             all_columns_in_groups = []
+    #             for group in column_groups:
+    #                 all_columns_in_groups.extend(group)
+                
+    #             if set(all_columns_in_groups) != set(formatted_header):
+    #                 raise ValueError("Column groups do not match the original header")
+                
+    #             if len(all_columns_in_groups) != len(set(all_columns_in_groups)):
+    #                 raise ValueError("Duplicate columns found in groups")
+                
+    #             return column_groups
+            
+    #         except Exception as e:
+    #             print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+    #             continue
+        
+    #     # Fallback: treat each column as its own group
+    #     print("Failed to group columns, falling back to the last result")
+    #     fixed_column_groups = []
+    #     all_columns_in_groups = []
+    #     for column_group in column_groups:
+    #         fixed_column_group = []
+    #         for column in column_group:
+    #             if column in formatted_header:
+    #                 fixed_column_group.append(column)
+    #                 all_columns_in_groups.append(column)
+    #         fixed_column_groups.append(fixed_column_group)
+    #     for column in formatted_header:
+    #         if column not in all_columns_in_groups:
+    #             fixed_column_groups.append([column])
+    #     return fixed_column_groups
     
     
     async def _design_schema_for_groups(
@@ -452,10 +592,24 @@ class TableProcessor:
             content = response.choices[0].message.content
             if content is None:
                 raise ValueError("LLM returned empty content")
+
+            pydantic_schema = self._extract_json(content)
+            for column in column_group:
+                if column not in pydantic_schema["properties"]:
+                    raise ValueError(f"Column {column} not found in pydantic schema")
+            new_columns = [col for col in pydantic_schema["properties"] if col not in column_group]
+            for derived_column in new_columns:
+                flag = False
+                for original_column in column_group:
+                    if original_column.replace(" ", "_") in derived_column.replace(" ", "_"):
+                        flag = True
+                        break
+                if not flag:
+                    raise ValueError(f"Derived column {derived_column} is not derived from any original column")
             
             return {
                 "input_item": (data_group, column_group),
-                "pydantic_schema": self._extract_json(content),
+                "pydantic_schema": pydantic_schema,
                 "error": None,
                 "success": True,
             }
@@ -492,15 +646,6 @@ class TableProcessor:
                 all_properties.update(schema["properties"])
         merged_schema["properties"] = all_properties
                 
-        # Merge required fields if they exist
-        all_required = []
-        for schema in group_schemas:
-            if "required" in schema:
-                all_required.extend(schema["required"])
-        
-        if all_required:
-            merged_schema["required"] = list(set(all_required))
-        
         return merged_schema
 
         
@@ -528,6 +673,7 @@ class TableProcessor:
                 col for col in reduced_pydantic_schema["required"] 
                 if col not in common_columns
             ]
+        print(reduced_pydantic_schema)
 
         if reduced_pydantic_schema["properties"]:
             queue: List[Tuple[int, List[Any]]] = []

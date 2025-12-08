@@ -56,14 +56,12 @@ Return a single JSON object inside a ```json ... ``` block.
 GROUP_COLUMNS_TEMPLATE = """
 You are an expert Data Architect. Your task is to group columns from the provided data snippet into semantically related clusters.
 
-### Definitions:
-
-Semantic Group: A set of columns that describe a single, cohesive concept (e.g., `['street', 'city', 'zip']` form an `address` group).
+### Core Principle:
+Group columns that must be analyzed together. The most critical rule is to place **all** columns with **overlapping information** in the same group. This allows for coherent data extraction, and avoid duplication after data extraction phase.
 
 ### Instructions:
 - Analyze the column names and their corresponding values in the `Data Snippet`.
-- Create logical groups of columns.
-- Each group must have a maximum of 8 columns.
+- Carefully look at values of each column to identify all columns that have overlapping information and form groups. If there are columns with overlapping information but not in the same group, then someone might die. So be careful.
 - Assign every column to exactly one group.
 
 ### Output Format:
@@ -88,20 +86,17 @@ Return a single JSON object inside a ```json ... ``` block.
 DESIGN_SCHEMA_TEMPLATE = """
 You are an expert Data Engineer and Python Pydantic Specialist. Your task is to analyze a raw snippet of tabular data, then design a new, enhanced schema for a data analysis phase.
 
-**Input Data:**
-You will receive a `DATA_SNIPPET`, which contains a list of JSON objects, each represent a single row from the table, with column titles as keys.
-
-**Your Goal:**
-Output a Pydantic-compliant JSON schema that prepares the data for the next data analysis phase.
+**Input and Output:**
+You will receive a `DATA_SNIPPET`, which contains a list of JSON objects, each represent a single row from the table, with column titles as keys. Output a Pydantic-compliant JSON schema that prepares the data for the next data analysis phase.
 
 ### Instructions:
 *   Scope of Analysis: Your decisions must be based exclusively on the data within the DATA_SNIPPET. Treat this snippet as the complete source of truth. Do not speculate about what the rest of the dataset might look like.
 *   Look at each column in the `DATA_SNIPPET` to determine the best data type for a database or downstream analysis based on the column's semantic meaning. For instance, if a column represent calendar dates or timestamps (e.g., "dd/mm/yyyy"), use a `datetime` type; if they represent quantitative data, use `float` or `int`. Avoid defaulting to `string` if a more specific type is suitable.
-*   Restructure for Analysis:
-    *   Identify Patterns: Look for string columns that contain complex, multi-part data.
-    *   The Component Extraction Rule: Determine if you can reliably extract common, meaningful components from the majority of the rows for the next analysis phase. For each found component, you must verify that component is consistent across ALL rows and that component is meaningful and useful. If only a few values have the same component while the majority do not, the component is not general enough, then do NOT add new column. If all values are the same, but that component does not have any meaning or usefulness, then do not add new column. But if all values have the same component, and adding this new column can make the data more useful for the next analysis phase, then you can create a new column with the component as the value.
-    *   New Column Naming: If you create a new column by extracting a component from an existing one, you must name it following the pattern: `original column name` + underscore + `component name`.
-*   For every field (both original and new), add a concise Vietnamese description. The description must explain the field's purpose and include approximately 3 example values from the data.
+*   The Component Extraction Rule: Look for string columns that contain complex, multi-part data, and determine if you can reliably extract common, meaningful components from the majority of the rows for the next analysis phase. For each found component, you must verify that component is consistent across ALL rows and that component is useful. 
+*   Analysis-Driven Restructuring: Before creating new columns from an existing one by extracting a component, you must justify it with analytical utility. Ask yourself, "Does the current format of the original column prevent or complicate common analytical operations like filtering, sorting, or mathematical aggregation?". Then ask yourself "Adding this new column can make the data more useful for the next analysis phase?".
+*   If you create a new column by extracting a component from an existing one, you must name it following the pattern: `original column name` + underscore + `component name`.
+*   You still need to keep all the original columns (maybe with a different data type) in the schema.
+*   For every column (both original and new), add a concise Vietnamese description to explain the column's purpose. Besides, include approximately 3 example values.
 
 ### Output Format:
 Output an explanation of the decision and a valid JSON object within a ```json ... ``` block:
@@ -114,11 +109,13 @@ Explanation: # your explanation of the decision here
   "properties": {
       "Tên cột 1": {
           "type": "string",
-          "description": "Mô tả của cột 1."
+          "description": "Mô tả của cột 1.",
+          "examples": ["Ví dụ 1", "Ví dụ 2", "Ví dụ 3"],
       },
       "Tên cột 2": {
            "type": "number",
-           "description": "Mô tả của cột 2"
+           "description": "Mô tả của cột 2",
+           "examples": ["Ví dụ 1", "Ví dụ 2", "Ví dụ 3"],
       },
       ...
   },

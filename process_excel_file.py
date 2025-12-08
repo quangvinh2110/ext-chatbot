@@ -33,7 +33,7 @@ def process_excel(input_file: str, output_dir: str):
     processor = TableProcessor()
 
     with ExcelParser(input_file) as parser:
-        for sheet_name in sheet_names[2:]:
+        for sheet_name in sheet_names[:2]:
             print(f"Processing sheet: {sheet_name}")
             try:
                 tables = parser.parse_sheet(sheet_name)
