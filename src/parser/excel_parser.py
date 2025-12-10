@@ -455,11 +455,13 @@ class TableDetector:
         
         return tables
     
-    def _extract_table(self, 
-                      df_full: pd.DataFrame, 
-                      start_row: int,
-                      merged_cells: List[MergedCellInfo],
-                      sheet_name: str) -> Optional[TableInfo]:
+    def _extract_table(
+        self, 
+        df_full: pd.DataFrame, 
+        start_row: int,
+        merged_cells: List[MergedCellInfo],
+        sheet_name: str
+    ) -> Optional[TableInfo]:
         """
         Extract a single table starting from start_row.
         
@@ -490,7 +492,7 @@ class TableDetector:
         header_row = df_full.iloc[start_row]
         
         num_cols = 0
-        for i, val in enumerate(header_row):
+        for _, val in enumerate(header_row):
             if pd.isna(val):
                 break
             num_cols += 1
@@ -520,6 +522,7 @@ class TableDetector:
         
         # Step 3: Extract the table data
         table_data = df_full.iloc[start_row:end_row, :num_cols]
+        # table_data = df_full
         
         # Convert to numpy array (includes header row as first row)
         table_array = table_data.values

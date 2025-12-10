@@ -3,7 +3,7 @@ import os
 import openpyxl
 
 from src.parser.excel_parser import ExcelParser
-from src.processor.table_processor import TableProcessor
+from src.processor.table import TableProcessor
 from src.utils import write_json
 
 from dotenv import load_dotenv
@@ -32,8 +32,8 @@ def process_excel(input_file: str, output_dir: str):
 
     processor = TableProcessor()
 
-    with ExcelParser(input_file) as parser:
-        for sheet_name in sheet_names[:2]:
+    with ExcelParser(input_file, skip_empty_rows=False) as parser:
+        for sheet_name in sheet_names:
             print(f"Processing sheet: {sheet_name}")
             try:
                 tables = parser.parse_sheet(sheet_name)

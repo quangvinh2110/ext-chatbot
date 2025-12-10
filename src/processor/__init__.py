@@ -1,4 +1,4 @@
-from .table_processor import TableProcessor
+from .table import TableProcessor
 
 __all__ = [
     "TableProcessor"
