@@ -198,7 +198,9 @@ class SQLiteDatabase:
         return table_info
 
 
-    def _get_column_descriptions_from_metadata(self, table_name: str) -> Dict[str, str]:
+    def _get_column_descriptions_from_metadata(
+        self, table_name: str
+    ) -> Dict[str, str]:
         """
         Fetch column descriptions from the metadata EAV table created alongside the data table.
 
@@ -220,6 +222,41 @@ class SQLiteDatabase:
                 return {row[0]: row[1] for row in result if row[1] is not None}
         except (ProgrammingError, SQLAlchemyError):
             return {}
+
+
+    def get_column_groups(self, table_name: str) -> List[List[str]]:
+        """
+        Return column groups for a table based on its metadata companion table.
+
+        Reads rows where attribute == "group" from "{table_name}__metadata" and
+        builds a list of column-name lists, ordered by group id.
+        """
+        metadata_table = f"{table_name}__metadata"
+        if metadata_table not in self._all_tables:
+            return []
+
+        groups: Dict[int, List[str]] = {}
+        try:
+            query = text(
+                f'SELECT entity, value FROM "{metadata_table}" WHERE attribute = :attr'
+            )
+            with self._engine.connect() as connection:
+                result: Result = connection.execute(query, {"attr": "group"})
+                for entity, value in result:
+                    if value is None:
+                        continue
+                    try:
+                        group_id = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    groups.setdefault(group_id, []).append(entity)
+        except (ProgrammingError, SQLAlchemyError):
+            return []
+
+        if not groups:
+            return []
+
+        return [groups[idx] for idx in sorted(groups.keys())]
 
 
     def _get_table_indexes(self, table: Table) -> str:
