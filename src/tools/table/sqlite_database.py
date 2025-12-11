@@ -10,14 +10,7 @@ from sqlalchemy.engine import Engine, Result
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.types import NullType
 
-
-def truncate_word(content: Any, *, length: int, suffix: str = "...") -> str:
-    """Truncate a string to a certain number of words, based on the max string length."""
-    if not isinstance(content, str) or length <= 0:
-        return content
-    if len(content) <= length:
-        return content
-    return content[: length - len(suffix)].rsplit(" ", 1)[0] + suffix
+from .utils import truncate_word
 
 
 class SQLiteDatabase:
@@ -31,7 +24,6 @@ class SQLiteDatabase:
         indexes_in_table_info: bool = False,
         max_string_length: int = 300,
         lazy_table_reflection: bool = False,
-        column_comments: Optional[Dict[str, Dict[str, str]]] = None,
     ):
         """
         Create SQLite database wrapper.
@@ -43,8 +35,6 @@ class SQLiteDatabase:
             indexes_in_table_info: Whether to include index information in table info
             max_string_length: Maximum string length for truncating values
             lazy_table_reflection: Whether to lazily reflect tables
-            column_comments: Dict of dict mapping table_name -> column_name -> comment
-                            e.g. {"users": {"id": "Primary key", "name": "User's full name"}}
         """
         self._engine = engine
         if self._engine.dialect.name != "sqlite":
@@ -73,7 +63,6 @@ class SQLiteDatabase:
 
         self._indexes_in_table_info = indexes_in_table_info
         self._max_string_length = max_string_length
-        self._column_comments = column_comments or {}
 
         self._metadata = MetaData()
         if not lazy_table_reflection:
@@ -169,13 +158,17 @@ class SQLiteDatabase:
 
         # Build custom CREATE TABLE statement with filtered columns
         col_defs = []
+        column_descriptions = (
+            self._get_column_descriptions_from_metadata(table_name)
+            if get_col_comments
+            else {}
+        )
         for col in display_columns:
             col_type = str(col.type) if not isinstance(col.type, NullType) else "TEXT"
             col_def = f'\t"{col.name}" {col_type}'
-            if get_col_comments and self._column_comments:
-                col_cmt = self._column_comments.get(table_name, {}).get(col.name, "")
-                if col_cmt:
-                    col_def = f"{col_def}\t/* {col_cmt} */"
+            col_cmt = column_descriptions.get(col.name, "")
+            if col_cmt:
+                col_def = f"{col_def}\t/* {col_cmt} */"
             col_defs.append(col_def)
 
         col_defs.sort()        
@@ -198,6 +191,29 @@ class SQLiteDatabase:
             table_info += "*/"
 
         return table_info
+
+    def _get_column_descriptions_from_metadata(self, table_name: str) -> Dict[str, str]:
+        """
+        Fetch column descriptions from the metadata EAV table created alongside the data table.
+
+        Expects a companion table named "{table_name}__metadata" with rows:
+            entity = column name
+            attribute = "description"
+            value = description text
+        """
+        metadata_table = f"{table_name}__metadata"
+        if metadata_table not in self._all_tables:
+            return {}
+
+        try:
+            query = text(
+                f'SELECT entity, value FROM "{metadata_table}" WHERE attribute = :attr'
+            )
+            with self._engine.connect() as connection:
+                result: Result = connection.execute(query, {"attr": "description"})
+                return {row[0]: row[1] for row in result if row[1] is not None}
+        except (ProgrammingError, SQLAlchemyError):
+            return {}
 
 
     def _get_table_indexes(self, table: Table) -> str:

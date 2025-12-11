@@ -3,6 +3,17 @@ import re
 from typing import Dict, Any, List, Optional
 
 
+def truncate_word(content: Any, *, length: int, suffix: str = "...") -> str:
+    """Truncate a string to a certain number of words, based on the max string length."""
+    if not isinstance(content, str) or length <= 0:
+        return content
+    if len(content) <= length:
+        return content
+    return content[: length - len(suffix)].rsplit(" ", 1)[0] + suffix
+
+
+
+
 def pydantic_to_sqlite_type(pydantic_type: str) -> str:
     type_mapping = {
         'string': 'TEXT',
@@ -16,6 +27,7 @@ def pydantic_to_sqlite_type(pydantic_type: str) -> str:
 
 def create_sqlite_table(
     schema: Dict[str, Any],
+    column_groups: List[List[str]],
     data: List[Dict[str, Any]],
     db_path: str,
     table_name: Optional[str] = None,
@@ -26,6 +38,7 @@ def create_sqlite_table(
     
     Args:
         schema: Pydantic schema in JSON schema format with 'title', 'type', and 'properties'
+        column_groups: List of column groups
         data: List of dictionaries containing data to import
         db_path: Path to the SQLite database file
         table_name: Name of the table. If None, uses schema['title'] or 'RowData'
@@ -59,6 +72,14 @@ def create_sqlite_table(
     # table_name = re.sub(r'[^\w\s]', '_', table_name)
     # table_name = re.sub(r'\s+', '_', table_name)
     
+    # Build quick lookup for column -> group id
+    column_groups = column_groups or []
+    column_group_lookup: Dict[str, int] = {}
+    for group_id, group in enumerate(column_groups):
+        for col in group:
+            # first group wins if duplicates
+            column_group_lookup.setdefault(col, group_id)
+
     # Get properties from schema
     properties = schema.get('properties', {})
     if not properties:
@@ -90,6 +111,17 @@ def create_sqlite_table(
         table_name=table_name,
         columns=',\n\t'.join(columns)
     ).strip()
+
+    # Metadata (EAV) table for column descriptions and groups
+    metadata_table_name = f"{table_name}__metadata"
+    create_metadata_table_sql = f'''
+    CREATE TABLE IF NOT EXISTS "{metadata_table_name}" (
+        entity TEXT NOT NULL,      -- column name
+        attribute TEXT NOT NULL,   -- "description" | "group"
+        value TEXT,
+        PRIMARY KEY (entity, attribute)
+    )
+    '''.strip()
     
     # Connect to database
     conn = sqlite3.connect(db_path)
@@ -99,6 +131,7 @@ def create_sqlite_table(
         # Handle if_exists option
         if if_exists == "replace":
             cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+            cursor.execute(f'DROP TABLE IF EXISTS "{metadata_table_name}"')
         elif if_exists == "append":
             # Check if table exists
             cursor.execute('''
@@ -111,6 +144,8 @@ def create_sqlite_table(
             else:
                 # Table doesn't exist, create it
                 cursor.execute(create_table_sql)
+            # Ensure metadata table exists for append path
+            cursor.execute(create_metadata_table_sql)
         elif if_exists == "fail":
             # Check if table exists
             cursor.execute('''
@@ -120,11 +155,13 @@ def create_sqlite_table(
             if cursor.fetchone():
                 raise ValueError(f"Table '{table_name}' already exists")
             cursor.execute(create_table_sql)
+            cursor.execute(create_metadata_table_sql)
         else:
             raise ValueError(f"Invalid if_exists value: {if_exists}. Must be 'replace', 'append', or 'fail'")
         
         # Create table if it doesn't exist (for append case where table might already exist)
         cursor.execute(create_table_sql)
+        cursor.execute(create_metadata_table_sql)
         
         # Prepare insert statement
         placeholders = ', '.join(['?' for _ in column_names])
@@ -132,6 +169,10 @@ def create_sqlite_table(
         insert_sql = f'''
         INSERT INTO "{table_name}" ({quoted_column_names})
         VALUES ({placeholders})
+        '''
+        insert_metadata_sql = f'''
+        INSERT OR REPLACE INTO "{metadata_table_name}" (entity, attribute, value)
+        VALUES (?, ?, ?)
         '''
         
         # Insert data
@@ -143,6 +184,15 @@ def create_sqlite_table(
                 rows_to_insert.append(values)
             
             cursor.executemany(insert_sql, rows_to_insert)
+
+        # Insert metadata rows (one per column * attributes)
+        metadata_rows = []
+        for col_name, prop_schema in properties.items():
+            description = prop_schema.get('description')
+            group_idx: Optional[int] = column_group_lookup.get(col_name)
+            metadata_rows.append((col_name, 'description', description))
+            metadata_rows.append((col_name, 'group', None if group_idx is None else str(group_idx)))
+        cursor.executemany(insert_metadata_sql, metadata_rows)
         
         conn.commit()
         return table_name
