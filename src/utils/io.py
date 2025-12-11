@@ -31,7 +31,7 @@ def read_jsonl(file_path: str) -> List[dict]:
 
 def read_json(file_path: str) -> dict:
     with open(file_path, 'r') as file:
-        return json.load(file)
+        return json.load(file)  # type: ignore
 
 
 def write_jsonl(data: List[dict], file_path: str) -> None:

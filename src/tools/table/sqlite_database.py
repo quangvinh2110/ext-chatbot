@@ -1,4 +1,4 @@
-from typing import Any, Dict, Iterable, List, Literal, Sequence, Union, Optional
+from typing import Any, Dict, Iterable, List, Literal, Sequence, Tuple, Union, Optional
 from sqlalchemy import (
     MetaData,
     Table,
@@ -82,6 +82,7 @@ class SQLiteDatabase:
                 only=list(self._usable_tables),
             )
 
+
     @classmethod
     def from_uri(
         cls,
@@ -93,16 +94,19 @@ class SQLiteDatabase:
         _engine_args = engine_args or {}
         return cls(create_engine(database_uri, **_engine_args), **kwargs)
 
+
     @property
     def dialect(self) -> str:
         """Return string representation of dialect to use."""
         return "sqlite"
+
 
     def get_usable_table_names(self) -> Iterable[str]:
         """Get names of tables available."""
         if self._include_tables:
             return sorted(self._include_tables)
         return sorted(self._all_tables - self._ignore_tables)
+
 
     def get_table_info(
         self,
@@ -195,6 +199,7 @@ class SQLiteDatabase:
 
         return table_info
 
+
     def _get_table_indexes(self, table: Table) -> str:
         """Get formatted index information for a table."""
         indexes = self._inspector.get_indexes(table.name)
@@ -203,6 +208,7 @@ class SQLiteDatabase:
             for idx in indexes
         )
         return f"Table Indexes:\n{indexes_formatted}"
+
 
     def _get_sample_rows_by_ids(
         self,
@@ -253,6 +259,7 @@ class SQLiteDatabase:
             f"{sample_rows_str}"
         )
 
+
     def _execute(
         self,
         command: str,
@@ -285,6 +292,7 @@ class SQLiteDatabase:
                 return result
         return []
 
+
     def run(
         self,
         command: str,
@@ -293,7 +301,7 @@ class SQLiteDatabase:
         *,
         parameters: Optional[Dict[str, Any]] = None,
         execution_options: Optional[Dict[str, Any]] = None,
-    ) -> Union[str, Sequence[Dict[str, Any]], Result[Any]]:
+    ) -> Union[Sequence[Dict[str, Any]], Sequence[Tuple[Any, ...]], Result[Any]]:
         """Execute a SQL command and return a string representing the results."""
         result = self._execute(
             command, fetch, parameters=parameters, execution_options=execution_options
@@ -302,21 +310,23 @@ class SQLiteDatabase:
         if fetch == "cursor":
             return result
 
-        res = [
-            {
-                column: truncate_word(value, length=self._max_string_length)
-                for column, value in r.items()
-            }
-            for r in result
-        ]
-
-        if not include_columns:
-            res = [tuple(row.values()) for row in res]
-
-        if not res:
-            return ""
+        if include_columns:
+            return [
+                {
+                    column: truncate_word(value, length=self._max_string_length)
+                    for column, value in r.items()
+                }
+                for r in result
+            ]
         else:
-            return str(res)
+            return [
+                tuple(
+                    truncate_word(value, length=self._max_string_length)
+                    for value in r.values()
+                )
+                for r in result
+            ]
+
 
     def run_no_throw(
         self,
@@ -326,18 +336,26 @@ class SQLiteDatabase:
         *,
         parameters: Optional[Dict[str, Any]] = None,
         execution_options: Optional[Dict[str, Any]] = None,
-    ) -> Union[str, Sequence[Dict[str, Any]], Result[Any]]:
+    ) -> Dict[str, Any]:
         """Execute a SQL command and return results or error message."""
         try:
-            return self.run(
+            res = self.run(
                 command,
                 fetch,
                 parameters=parameters,
                 execution_options=execution_options,
                 include_columns=include_columns,
             )
+            return {
+                "result": res,
+                "error": None,
+            }
         except SQLAlchemyError as e:
-            return f"Error: {e}"
+            return {
+                "result": [],
+                "error": f"Error: {e}",
+            }
+
 
     def get_table_info_no_throw(
         self,
@@ -356,6 +374,7 @@ class SQLiteDatabase:
             )
         except ValueError as e:
             return f"Error: {e}"
+
 
     def get_context(self) -> Dict[str, Any]:
         """Return db context that you may want in agent prompt."""

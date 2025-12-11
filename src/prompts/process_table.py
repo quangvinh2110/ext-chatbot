@@ -93,44 +93,6 @@ Return a single JSON object inside a ```json ... ``` block.
 """.strip()
 
 
-MERGE_COLUMN_GROUPS_TEMPLATE = """
-You are an expert Data Architect. Your task is to merge column groups from the provided data snippet into semantically related bigger groups.
-
-### Core Principle:
-- Merge groups to form new bigger groups that contain columns that must be analyzed together. 
-- You are only allowed to merge column groups. If two columns are in the same group before merging, then you have to keep them in the same new group after merging.
-
-### Instructions:
-- Analyze the column names and their corresponding values in the `Data Snippet`.
-- Carefully look at values of each column to identify all columns that must be analyzed together and form new groups.
-- Each new group should contain **at least {{group_min_size}} columns** and **at most {{group_max_size}} columns**.
-- Assign every column to exactly one new group after merging.
-
-### Output Format:
-Return a single JSON object inside a ```json ... ``` block.
-```json
-{
-  "reasoning": "Reasoning of the decision",
-  "column_groups": [
-    {
-      "group_name": "name of the group",
-      "columns": ["column1", "column2",...]
-    },
-    ...
-  ]
-}
-
-### Sheet Name:
-{{sheet_name}}
-
-### Original Column Groups:
-{{column_groups}}
-
-### Data Snippet:
-{{table_data_snippet}}
-""".strip()
-
-
 DESIGN_SCHEMA_TEMPLATE = """
 You are an expert Data Engineer and Python Pydantic Specialist. Your task is to analyze a raw snippet of tabular data, then design a new, enhanced schema for a data analysis phase.
 

@@ -1,10 +1,10 @@
 import os
 import random
 import collections
-from typing import Optional, Dict, Any, List, Literal, Set, Tuple
+from typing import Optional, Dict, Any, List, Literal, Set
 from openai import OpenAI
 
-from src.prompts import GROUP_COLUMNS_TEMPLATE, MERGE_COLUMN_GROUPS_TEMPLATE
+from src.prompts import GROUP_COLUMNS_TEMPLATE
 from src.processor.table.utils import (
     format_table_data_snippet_with_header,
     extract_json,
