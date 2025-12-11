@@ -93,8 +93,13 @@ class SQLiteDatabase:
     def get_usable_table_names(self) -> Iterable[str]:
         """Get names of tables available."""
         if self._include_tables:
-            return sorted(self._include_tables)
-        return sorted(self._all_tables - self._ignore_tables)
+            base = set(self._include_tables)
+        else:
+            base = self._all_tables - self._ignore_tables
+
+        # filter out metadata tables (companion EAV tables)
+        base = {tbl for tbl in base if not tbl.endswith("__metadata")}
+        return sorted(base)
 
 
     def get_table_info(
@@ -191,6 +196,7 @@ class SQLiteDatabase:
             table_info += "*/"
 
         return table_info
+
 
     def _get_column_descriptions_from_metadata(self, table_name: str) -> Dict[str, str]:
         """
