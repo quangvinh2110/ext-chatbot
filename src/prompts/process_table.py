@@ -4,8 +4,8 @@ You are an expert Data Engineer. Your task is to analyze a data snippet to ident
 ### Definitions:
 
 1.  What is a Header?
-    *   A row is considered belong to the header if it contains only **column titles/labels** (e.g., `['First Name', 'Last Name', 'Email']`). If a row contains both label and value, then it is not a header.
-    *   **The "JSON Key" Test:** After deciding which rows belong to the header, you must check if the column titles/labels can be used as keys for the data rows that follow. If yes, then the row belongs to the header. For multi-level headers, the titles are combined by underscores to form a single key.
+    *   A row is considered belong to the header if it contains only **column titles/labels**. If a row contains both column titles/labels and column values, then it is not a header.
+    *   **The "JSON Key" Test:** After deciding which rows belong to the header  (or not), you must check if the column titles/labels can be used as keys for the data rows that follow (you can form a JSON object from the column titles/labels and the data rows that follow and check if the JSON object is valid). If yes, then the row belongs to the header. For multi-level headers, the titles are combined by underscores to form a single key.
 
 2.  What is a Footer?
     *   A footer contains summary data like totals, averages, or page numbers.
@@ -19,11 +19,14 @@ You are an expert Data Engineer. Your task is to analyze a data snippet to ident
 Return a single JSON object inside a ```json ... ``` block.
 ```json
 {
-  "explanation": "Explanation of the decision",
+  "reasoning": "Reasoning of the decision",
   "header_indices": [list of indices of header rows],  // or null
   "footer_indices": [list of indices of footer rows], // or null
 }
 ```
+
+### Sheet Name:
+{{sheet_name}}
 
 ### Data Snippet:
 {{table_data_snippet}}
@@ -48,6 +51,9 @@ Return a single JSON object inside a ```json ... ``` block.
 }
 ```
 
+### Sheet Name:
+{{sheet_name}}
+
 ### Table Data Snippet:
 {{table_data_snippet}}
 """.strip()
@@ -61,7 +67,7 @@ Group columns that must be analyzed together. The most critical rule is to place
 
 ### Instructions:
 - Analyze the column names and their corresponding values in the `Data Snippet`.
-- Carefully look at values of each column to identify all columns that have overlapping information and form groups. If there are columns with overlapping information but not in the same group, then someone might die. So be careful.
+- Carefully look at values of each column to identify all columns that have overlapping information and form groups.
 - Assign every column to exactly one group.
 
 ### Output Format:
@@ -79,6 +85,9 @@ Return a single JSON object inside a ```json ... ``` block.
 }
 ```
 
+### Sheet Name:
+{{sheet_name}}
+
 ### Data Snippet:
 {{table_data_snippet}}
 """.strip()
@@ -94,23 +103,25 @@ You are an expert Data Architect. Your task is to merge column groups from the p
 ### Instructions:
 - Analyze the column names and their corresponding values in the `Data Snippet`.
 - Carefully look at values of each column to identify all columns that must be analyzed together and form new groups.
-- There are {{num_cols}} columns in the original column groups. Each new group MUST contain **at least {{group_min_size}} columns** and **at most {{group_max_size}} columns**. IF NOT, THEN SOMEONE WILL DIE AND THE WORLD WILL END, AND YOU WILL BE THE ONE TO BLAME.
+- Each new group should contain **at least {{group_min_size}} columns** and **at most {{group_max_size}} columns**.
 - Assign every column to exactly one new group after merging.
 
 ### Output Format:
 Return a single JSON object inside a ```json ... ``` block.
 ```json
 {
-  "explanation": "Explanation of your grouping logic",
+  "reasoning": "Reasoning of the decision",
   "column_groups": [
     {
       "group_name": "name of the group",
-      "num_cols": number of columns in the group,
       "columns": ["column1", "column2",...]
     },
     ...
   ]
 }
+
+### Sheet Name:
+{{sheet_name}}
 
 ### Original Column Groups:
 {{column_groups}}
@@ -124,11 +135,11 @@ DESIGN_SCHEMA_TEMPLATE = """
 You are an expert Data Engineer and Python Pydantic Specialist. Your task is to analyze a raw snippet of tabular data, then design a new, enhanced schema for a data analysis phase.
 
 **Input and Output:**
-You will receive a `DATA_SNIPPET`, which contains a list of JSON objects, each represent a single row from the table, with column titles as keys. Output a Pydantic-compliant JSON schema that prepares the data for the next data analysis phase.
+You will receive a `Data snippet`, which contains a list of JSON objects, each represent a single row from the table, with column titles as keys. Output a Pydantic-compliant JSON schema that prepares the data for the next data analysis phase.
 
 ### Instructions:
-*   Scope of Analysis: Your decisions must be based exclusively on the data within the DATA_SNIPPET. Treat this snippet as the complete source of truth. Do not speculate about what the rest of the dataset might look like.
-*   Look at each column in the `DATA_SNIPPET` to determine the best data type for a database or downstream analysis based on the column's semantic meaning. For instance, if a column represent calendar dates or timestamps (e.g., "dd/mm/yyyy"), use a `datetime` type; if they represent quantitative data, use `float` or `int`. Avoid defaulting to `string` if a more specific type is suitable.
+*   Scope of Analysis: Your decisions must be based exclusively on the data within the Data snippet. Treat this snippet as the complete source of truth. Do not speculate about what the rest of the dataset might look like.
+*   Look at each column in the `Data snippet` to determine the best data type for a database or downstream analysis based on the column's semantic meaning. For instance, if a column represent calendar dates or timestamps (e.g., "dd/mm/yyyy"), use a `datetime` type; if they represent quantitative data, use `float` or `int`. Avoid defaulting to `string` if a more specific type is suitable.
 *   The Component Extraction Rule: Look for string columns that contain complex, multi-part data, and determine if you can reliably extract common, meaningful components from the majority of the rows for the next analysis phase. For each found component, you must verify that component is consistent across ALL rows and that component is useful. 
 *   Analysis-Driven Restructuring: Before creating new columns from an existing one by extracting a component, you must justify it with analytical utility. Ask yourself, "Does the current format of the original column prevent or complicate common analytical operations like filtering, sorting, or mathematical aggregation?". Then ask yourself "Adding this new column can make the data more useful for the next analysis phase?".
 *   If you create a new column by extracting a component from an existing one, you must name it following the pattern: `original column name` + underscore + `component name`.
@@ -159,16 +170,19 @@ Explanation: # your explanation of the decision here
 }
 ```
 
-### DATA SNIPPET:
+### Sheet Name:
+{{sheet_name}}
+
+### Data Snippet:
 {{table_data_snippet}}
 """.strip()
 
 
 TRANSFORM_DATA_TEMPLATE = """
-You are a Data Engineer. Your task is to transform a single `RAW_ROW` of data into a clean JSON object that conforms to the provided `PYDANTIC_SCHEMA`.
+You are a Data Engineer. Your task is to transform a single `Raw Row` of data into a clean JSON object that conforms to the provided `Pydantic Schema`.
 
 ### Core Task:
-Map the values from `RAW_ROW` to the properties defined in the `PYDANTIC_SCHEMA`. `RAW_ROW` is a dictionary. Use the dictionary keys (column titles in the original header) to intelligently match values to the new schema's fields.
+Map the values from `Raw Row` to the properties defined in the `Pydantic Schema`. `Raw Row` is a dictionary. Use the dictionary keys (column titles in the original header) to intelligently match values to the new schema's fields.
 
 After mapping, ensure every value in the final JSON strictly matches the data type and example values specified in the schema.
 
@@ -177,9 +191,9 @@ Return only a single JSON object inside a ```json ... ``` code block.
 
 ### Input Data:
 
-**RAW_ROW:**
+**Raw Row:**
 {{raw_row}}
 
-**PYDANTIC_SCHEMA:**
+**Pydantic Schema:**
 {{pydantic_schema}}
 """.strip()

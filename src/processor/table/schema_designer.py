@@ -27,6 +27,7 @@ class SchemaDesigner:
         self,
         data_groups: List[List[List[Any]]],
         column_groups: List[List[str]],
+        sheet_name: Optional[str] = None,
         max_retries: int = 3,
         max_concurrent_requests: int = 10,
     ) -> Dict[str, Any]:
@@ -48,6 +49,7 @@ class SchemaDesigner:
             # Process batch
             batch_results = await self._design_schema_for_groups(
                 queue=queue,
+                sheet_name=sheet_name,
                 max_concurrent_requests=max_concurrent_requests,
             )
 
@@ -83,6 +85,7 @@ class SchemaDesigner:
     async def _design_schema_for_groups(
         self,
         queue: List[Tuple[List[List[Any]], List[str]]],
+        sheet_name: Optional[str] = None,
         max_concurrent_requests: int = 10,
     ) -> List[Dict[str, Any]]:
         """
@@ -99,7 +102,8 @@ class SchemaDesigner:
             self._design_schema_for_single_group(
                 data_group=data_group,
                 column_group=column_group,
-                semaphore=semaphore
+                semaphore=semaphore,
+                sheet_name=sheet_name,
             )
             for data_group, column_group in queue
         ]
@@ -111,6 +115,7 @@ class SchemaDesigner:
         data_group: List[List[Any]],
         column_group: List[str],
         semaphore: asyncio.Semaphore,
+        sheet_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Design schema for a single column group.
@@ -132,6 +137,8 @@ class SchemaDesigner:
         )
         prompt = DESIGN_SCHEMA_TEMPLATE.replace(
             "{{table_data_snippet}}", snippet
+        ).replace(
+            "{{sheet_name}}", sheet_name or "Unknown"
         )
         try:
             response = await self.client.chat.completions.create(

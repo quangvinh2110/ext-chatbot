@@ -488,11 +488,21 @@ class TableDetector:
             >>> if table_info:
             ...     print(f"Extracted table with {table_info.num_cols} columns")
         """
-        # Step 1: Find columns - read header row until we hit NA
+        # Step 1: Find the starting column and count contiguous header values
         header_row = df_full.iloc[start_row]
-        
+
+        start_col = None
+        for idx, val in enumerate(header_row):
+            if not pd.isna(val):
+                start_col = idx
+                break
+
+        # No non-empty cells on this row -> no table
+        if start_col is None:
+            return None
+
         num_cols = 0
-        for _, val in enumerate(header_row):
+        for val in header_row.iloc[start_col:]:
             if pd.isna(val):
                 break
             num_cols += 1
@@ -504,8 +514,8 @@ class TableDetector:
         # Step 2: Find rows - continue until we hit a row with all NAs
         end_row = start_row + 1
         while end_row < len(df_full):
-            row_data = df_full.iloc[end_row, :num_cols]
-            full_row = df_full.iloc[end_row]
+            row_data = df_full.iloc[end_row, start_col:start_col + num_cols]
+            full_row = df_full.iloc[end_row, start_col:]
 
             if row_data.isna().all():
                 break
@@ -521,7 +531,7 @@ class TableDetector:
             return None
         
         # Step 3: Extract the table data
-        table_data = df_full.iloc[start_row:end_row, :num_cols]
+        table_data = df_full.iloc[start_row:end_row, start_col:start_col + num_cols]
         # table_data = df_full
         
         # Convert to numpy array (includes header row as first row)
@@ -531,15 +541,16 @@ class TableDetector:
         table_merged_cells = [
             mc for mc in merged_cells
             if (mc.min_row - 1 >= start_row and 
-                mc.max_row - 1 <= end_row and
-                mc.min_col - 1 < num_cols)
+                mc.max_row - 1 < end_row and
+                mc.min_col - 1 >= start_col and
+                mc.max_col - 1 < start_col + num_cols)
         ]
         
         return TableInfo(
             data=table_array,
             start_row=start_row,
             end_row=end_row - 1,
-            start_col=0,
+            start_col=start_col,
             num_cols=num_cols,
             num_data_rows=num_data_rows,
             merged_cells=table_merged_cells,

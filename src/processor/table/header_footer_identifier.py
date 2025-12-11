@@ -24,12 +24,15 @@ class HeaderFooterIdentifier:
     def __call__(
         self,
         table_rows: List[List[Any]],
+        sheet_name: Optional[str] = None,
         max_retries: int = 3,
     ) -> Dict[str, Any]:
         snippet = format_table_data_snippet(table_rows)
         prompt = IDENTIFY_HEADER_FOOTER_TEMPLATE.replace(
             "{{table_data_snippet}}",
             snippet
+        ).replace(
+            "{{sheet_name}}", sheet_name or "Unknown"
         )
         for attempt in range(max_retries):
             try:
@@ -54,7 +57,7 @@ class HeaderFooterIdentifier:
                 header_footer_info = extract_json(content)
                 if "header_indices" not in header_footer_info or "footer_indices" not in header_footer_info:
                     raise ValueError("Failed to identify header and footer")
-                    
+
                 return {
                     "header_indices": header_footer_info["header_indices"],
                     "footer_indices": header_footer_info["footer_indices"],

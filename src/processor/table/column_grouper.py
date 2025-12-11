@@ -32,6 +32,7 @@ class ColumnGrouper:
         self,
         data_rows: List[List[Any]],
         formatted_header: List[str],
+        sheet_name: Optional[str] = None,
         method: Literal["rule", "semantic", "hybrid"] = "rule",
         **kwargs,
     ) -> List[List[str]]:
@@ -41,13 +42,14 @@ class ColumnGrouper:
                 formatted_header=formatted_header,
                 sample_size=kwargs.get("sample_size", 20),
                 lcs_threshold=kwargs.get("lcs_threshold", 5),
-                group_min_size=kwargs.get("group_min_size", 3),
-                group_max_size=kwargs.get("group_max_size", 8),
+                min_group_size=kwargs.get("min_group_size", 3),
+                max_group_size=kwargs.get("max_group_size", 8),
             )
         elif method == "semantic":
             return self.group_columns_by_semantic(
                 data_rows=data_rows, 
                 formatted_header=formatted_header, 
+                sheet_name=sheet_name,
                 max_retries=kwargs.get("max_retries", 3),
                 sample_size=kwargs.get("sample_size", 5),
             )
@@ -55,10 +57,11 @@ class ColumnGrouper:
             return self.group_columns_by_hybrid(
                 data_rows=data_rows,
                 formatted_header=formatted_header,
+                sheet_name=sheet_name,
                 sample_size=kwargs.get("sample_size", 20),
                 lcs_threshold=kwargs.get("lcs_threshold", 5),
-                group_min_size=kwargs.get("group_min_size", 3),
-                group_max_size=kwargs.get("group_max_size", 10),
+                min_group_size=kwargs.get("min_group_size", 3),
+                max_group_size=kwargs.get("max_group_size", 10),
                 max_retries=kwargs.get("max_retries", 3),
             )
         else:
@@ -131,13 +134,13 @@ class ColumnGrouper:
         formatted_header: List[str],
         sample_size: int = 10,
         lcs_threshold: int = 5,
-        group_min_size: int = 3,
-        group_max_size: int = 8,
+        min_group_size: int = 3,
+        max_group_size: int = 8,
     ) -> List[List[str]]:
         """
         Groups columns by data similarity and then merges small adjacent groups.
 
-        Step 1: Performs a data-driven clustering based on Longest Common Substring
+        Step 1: Performs a data-driven grouping based on Longest Common Substring
                 similarity over a sample of the data.
         Step 2: Post-processes the result to merge adjacent groups that have fewer
                 than 3 columns, ensuring the merged group does not exceed 8 columns.
@@ -191,10 +194,10 @@ class ColumnGrouper:
                 initial_groups.append(sorted(current_group))
         
         # --- Step 2: Merge the small groups ---
-        groups_to_merge: List[List[str]] = [group for group in initial_groups if len(group) < group_min_size]
-        final_groups: List[List[str]] = self._merge_groups_by_rule(groups_to_merge, min_size=group_min_size, max_size=group_max_size)
+        groups_to_merge: List[List[str]] = [group for group in initial_groups if len(group) < min_group_size]
+        final_groups: List[List[str]] = self._merge_groups_by_rule(groups_to_merge, min_size=min_group_size, max_size=max_group_size)
         for group in initial_groups:
-            if len(group) >= group_min_size:
+            if len(group) >= min_group_size:
                 final_groups.append(group)
         
         return final_groups
@@ -204,6 +207,7 @@ class ColumnGrouper:
         self,
         data_rows: List[List[Any]],
         formatted_header: List[str],
+        sheet_name: Optional[str] = None,
         sample_size: int = 5,
         max_retries: int = 3,
     ) -> List[List[str]]:
@@ -230,6 +234,8 @@ class ColumnGrouper:
         
         prompt = GROUP_COLUMNS_TEMPLATE.replace(
             "{{table_data_snippet}}", snippet
+        ).replace(
+            "{{sheet_name}}", sheet_name or "Unknown"
         )
         
         column_groups: List[List[str]] = []
@@ -298,118 +304,165 @@ class ColumnGrouper:
         self,
         data_rows: List[List[Any]],
         formatted_header: List[str],
+        sheet_name: Optional[str] = None,
         sample_size: int = 20,
         lcs_threshold: int = 5,
-        group_min_size: int = 3,
-        group_max_size: int = 10,
+        min_group_size: int = 3,
+        max_group_size: int = 10,
         max_retries: int = 3,
-    ) -> None:
-        initial_groups = self.group_columns_by_rule(
+    ) -> List[List[str]]:
+        if len(formatted_header) <= max_group_size:
+            return [formatted_header]
+        
+        groups_by_rule = self.group_columns_by_rule(
             data_rows=data_rows,
             formatted_header=formatted_header,
             sample_size=sample_size,
             lcs_threshold=lcs_threshold,
-            group_min_size=1,
+            min_group_size=1,
         )
 
-        groups_to_merge: List[List[str]] = [group for group in initial_groups if len(group) < group_max_size]
-        header_to_merge = [col for group in groups_to_merge for col in group]
-        col_to_data_map: Dict[str, Tuple[Any]] = {
-            col: data 
-            for col, data in zip(formatted_header, zip(*data_rows))
-        }
-        data_to_merge = [
-            list(row)
-            for row in zip(*[col_to_data_map[col] for col in header_to_merge])
-        ]
-
-        num_samples = min(sample_size//4, len(data_rows))
-        sample_rows = random.sample(data_to_merge, num_samples)
-        snippet = format_table_data_snippet_with_header(
-            formatted_header=header_to_merge,
-            data_rows=sample_rows,
-        )
-        
-        prompt = MERGE_COLUMN_GROUPS_TEMPLATE.replace(
-            "{{column_groups}}", str(groups_to_merge)
-        ).replace(
-            "{{table_data_snippet}}", snippet
-        ).replace(
-            "{{group_min_size}}", str(group_min_size)
-        ).replace(
-            "{{group_max_size}}", str(group_max_size)
-        ).replace(
-            "{{num_cols}}", str(len(header_to_merge))
+        groups_by_llm = self.group_columns_by_semantic(
+            data_rows=data_rows,
+            formatted_header=formatted_header,
+            sheet_name=sheet_name,
+            sample_size=sample_size,
+            max_retries=max_retries,
         )
 
         final_groups: List[List[str]] = []
-        for attempt in range(max_retries):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                    top_p=0.8,
-                    presence_penalty=1,
-                    extra_body = {
-                        "chat_template_kwargs": {'enable_thinking': False},
-                        "top_k": 20,
-                        "mip_p": 0,
-                    },
-                )
-                
-                content = response.choices[0].message.content
-                if content is None:
-                    raise ValueError("LLM returned empty content")
+        mergeable_rule_groups: List[List[str]] = []
 
-                result = extract_json(content)
-                
-                # Validate the result
-                if not result.get("column_groups"):
-                    raise ValueError("Failed to group columns")
-                
-                final_groups = [group["columns"] for group in result["column_groups"]]
-                
-                # Validate that all columns are included and no duplicates
-                all_columns_in_groups = []
-                for group in final_groups:
-                    if len(group) < group_min_size:
-                        raise ValueError(f"New groups do not contain at least {group_min_size} columns")
-                    if len(group) > group_max_size:
-                        raise ValueError(f"New groups do not contain at most {group_max_size} columns")
-                    all_columns_in_groups.extend(group)
-                
-                if set(all_columns_in_groups) != set(header_to_merge):
-                    raise ValueError("Column groups do not match the original header")
-                
-                if len(all_columns_in_groups) != len(set(all_columns_in_groups)):
-                    raise ValueError("Duplicate columns found in groups")
-
-                for group in groups_to_merge:
-                    new_group = []
-                    for col in group:
-                        if new_group:
-                            if col in new_group:
-                                continue
-                            else:
-                                raise ValueError("New groups do not match the original groups")
-                        for new_group in final_groups:
-                            if col in new_group:
-                                break
-
-                for group in initial_groups:
-                    if len(group) >= group_min_size:
-                        final_groups.append(group)
-                return final_groups
-            
-            except Exception as e:
-                print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
-                continue
-        
-        # Fallback: treat each column as its own group
-        print("Failed to merge column groups, falling back to merging by rule")
-        final_groups: List[List[str]] = self._merge_groups_by_rule(groups_to_merge, min_size=group_min_size, max_size=group_max_size)
-        for group in initial_groups:
-            if len(group) >= group_min_size:
+        # --- Step 1: Segregate Rule Clusters ---
+        for group in groups_by_rule:
+            if len(group) > max_group_size:
+                # If rule group is too big, keep it as is (per instructions)
                 final_groups.append(group)
+            else:
+                mergeable_rule_groups.append(group)
+
+        # --- Step 2: Map Columns to LLM Cluster IDs ---
+        col_to_llm_id: Dict[str, int] = {}
+        for idx, group in enumerate(groups_by_llm):
+            for col in group:
+                col_to_llm_id[col] = idx
+
+        # --- Step 3: Assign Rule Clusters to LLM Buckets ---
+        llm_buckets = collections.defaultdict(list)
+        orphans = []
+
+        for r_group in mergeable_rule_groups:
+            # Vote for LLM group based on columns in this rule group
+            votes = [col_to_llm_id[col] for col in r_group if col in col_to_llm_id]
+            
+            if not votes:
+                orphans.append(r_group)
+            else:
+                # Majority vote wins
+                most_common_llm_id = collections.Counter(votes).most_common(1)[0][0]
+                llm_buckets[most_common_llm_id].append(r_group)
+
+        # --- Step 4: Intra-Bucket Merging (Semantic Merging) ---
+        # We create a list of "Candidates". Some might be valid size, some might be small.
+        candidate_groups: List[List[str]] = []
+
+        # Process buckets in order of LLM IDs to keep some stability
+        sorted_llm_ids = sorted(llm_buckets.keys())
+        
+        # Combine orphans into the processing list as a "None" bucket or append at end
+        # Let's process valid buckets first
+        all_groups_to_process = [llm_buckets[i] for i in sorted_llm_ids]
+        if orphans:
+            all_groups_to_process.append(orphans)
+
+        for rule_groups in all_groups_to_process:
+            current_buffer: List[str] = []
+            
+            for group in rule_groups:
+                # Can we add this group to buffer without exceeding MAX?
+                if len(current_buffer) + len(group) <= max_group_size:
+                    current_buffer.extend(group)
+                else:
+                    # Buffer is full/ready.
+                    if current_buffer:
+                        candidate_groups.append(current_buffer)
+                    # Start new buffer with current group
+                    current_buffer = list(group)
+            
+            # Flush the buffer for this bucket
+            if current_buffer:
+                candidate_groups.append(current_buffer)
+
+        # --- Step 5: Enforce Min Group Size (The "Fixer" Pass) ---
+        # We separate candidates into "Valid" (>= min) and "Undersized" (< min).
+        
+        valid_candidates = []
+        undersized_candidates = []
+
+        for group in candidate_groups:
+            if len(group) >= min_group_size:
+                valid_candidates.append(group)
+            else:
+                undersized_candidates.append(group)
+
+        # Add valid ones to final immediately
+        final_groups.extend(valid_candidates)
+
+        # Now we must merge the undersized candidates together.
+        # Since they are "leftovers" from different LLM buckets, they might 
+        # not be semantically related, but we must satisfy min_size.
+        
+        leftover_buffer: List[str] = []
+        
+        for small_group in undersized_candidates:
+            # Can we merge into leftover buffer?
+            if len(leftover_buffer) + len(small_group) <= max_group_size:
+                leftover_buffer.extend(small_group)
+                
+                # Check if we hit the "Sweet Spot" (>= min and <= max)
+                # If we reached min_size, we *could* stop here to preserve some separation, but usually filling up slightly more is safer for packing. Here we finalize ONLY if we are fairly large or if we want to isolate. Let's simple-pack: keep adding until we HAVE to split or we finish.
+            else:
+                # Adding this would exceed max. But wait, is leftover_buffer valid?
+                if len(leftover_buffer) >= min_group_size:
+                    final_groups.append(leftover_buffer)
+                    leftover_buffer = list(small_group)
+                else:
+                    # CRITICAL CASE: The leftover buffer is < min, AND we can't add the next group because it would make it > max. This implies `small_group` is huge  (which is impossible logically given it came from undersized list) OR max_size is extremely close to min_size. In this specific scenario, we force merge to avoid dropping data, or we finalize the undersized one (user preference: strictly >= min). Given inputs, undersized chunks are small. merging them usually fits.
+                    final_groups.append(leftover_buffer)
+                    leftover_buffer = list(small_group)
+                    
+        # Check the leftover buffer logic again: We want to finalize the buffer as soon as it hits min_group_size? Or keep it open? To fix "Cluster 6 and 7" problem, we should merge them. Revised Logic for Undersized: Just concactenate them all, then chunk by max_size (ensuring min_size).
+        flat_undersized = [col for grp in undersized_candidates for col in grp]
+        
+        current_chunk = []
+        for col in flat_undersized:
+            current_chunk.append(col)
+            # If we hit max size, dump it
+            if len(current_chunk) == max_group_size:
+                final_groups.append(current_chunk)
+                current_chunk = []
+
+        # --- Step 6: Handle the very last remnant ---
+        if current_chunk:
+            # If this chunk is >= min, great.
+            if len(current_chunk) >= min_group_size:
+                final_groups.append(current_chunk)
+            else:
+                # It is < min. We need to merge it into an existing group if possible. Try to merge into the last group in final_groups
+                if final_groups:
+                    last_group = final_groups[-1]
+                    if len(last_group) + len(current_chunk) <= max_group_size:
+                        # Merge into previous
+                        last_group.extend(current_chunk)
+                    else:
+                        # Cannot merge into previous without violating max.
+                        # We have no choice: either violate min (keep standalone) 
+                        # or violate max (merge).
+                        # Usually, violate max is worse for context windows. 
+                        # We leave it as standalone (best effort).
+                        final_groups.append(current_chunk)
+                else:
+                    # There were no other groups at all. Return what we have.
+                    final_groups.append(current_chunk)
+
         return final_groups

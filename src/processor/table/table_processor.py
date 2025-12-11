@@ -1,6 +1,6 @@
 import copy
 import asyncio
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from ...parser.excel_parser import TableInfo
 from ...utils import set_seed
@@ -76,8 +76,14 @@ class TableProcessor:
             Dict containing 'structure_info' and 'transformed_data'.
         """
         table_rows = table.data.tolist()
+        table_rows = self.preprocess_data(table_rows)
+
         print("Identifying header and footer...")
-        header_footer_info = self.header_footer_identifier(table_rows, max_retries)
+        header_footer_info = self.header_footer_identifier(
+            table_rows, 
+            sheet_name=table.sheet_name,
+            max_retries=max_retries
+        )
         print(header_footer_info)
 
         header_footer_info["generated_header"] = None
@@ -86,7 +92,11 @@ class TableProcessor:
 
         if not header_indices:
             print("Generating header...")
-            generated_header = self.header_generator(table_rows, max_retries)
+            generated_header = self.header_generator(
+                table_rows, 
+                sheet_name=table.sheet_name,
+                max_retries=max_retries
+            )
             print(generated_header)
             header_footer_info["generated_header"] = generated_header
             formatted_header = generated_header
@@ -107,12 +117,10 @@ class TableProcessor:
         column_groups = self.column_grouper(
             data_rows=data_rows,
             formatted_header=formatted_header,
+            sheet_name=table.sheet_name,
             method="hybrid",
             max_retries=max_retries,
         )
-        print(column_groups)
-        exit()
-
         col_to_data_map: Dict[str, Tuple[Any]] = {
             col: data 
             for col, data in zip(formatted_header, zip(*data_rows))
@@ -125,11 +133,11 @@ class TableProcessor:
             ]
             for group in column_groups
         ]
-        
         print("Designing schema...")
         pydantic_schema = asyncio.run(self.schema_designer(
             data_groups=data_groups, 
             column_groups=column_groups, 
+            sheet_name=table.sheet_name,
             max_retries=max_retries
         ))
         print(pydantic_schema)
@@ -143,6 +151,7 @@ class TableProcessor:
                         if col.replace(" ", "_") in new_col.replace(" ", "_"):
                             new_group.append(new_col)
                             break
+            new_group.sort()
             new_column_groups.append(new_group)
 
         print("Transforming data...")
@@ -160,6 +169,21 @@ class TableProcessor:
             "column_groups": new_column_groups,
             "transformed_data": transformed_data
         }
+
+
+    def preprocess_data(self, table_rows: List[List[Any]]) -> List[List[Any]]:
+        print("Preprocessing data...")
+        preprocessed_rows = []
+        for row in table_rows:
+            new_row = []
+            for cell in row:
+                if isinstance(cell, str):
+                    new_row.append(cell.strip())
+                else:
+                    new_row.append(cell)
+            preprocessed_rows.append(new_row)
+        return preprocessed_rows
+
 
 # In design_schema method, instead of generating pydantic schema, generate SQL schema for different dialects like sqlite, mysql, postgresql, etc.
 # In transform_data method, instead of generating a json object, generate a SQL query that can be used to insert the data into the database, then run the query to check if the data is inserted correctly.

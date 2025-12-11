@@ -24,6 +24,7 @@ class HeaderGenerator:
     def __call__(
         self,
         table_rows: List[List[Any]],
+        sheet_name: Optional[str] = None,
         max_retries: int = 3,
     ) -> List[str]:
         snippet = format_table_data_snippet_with_header(
@@ -32,9 +33,9 @@ class HeaderGenerator:
         )
         prompt = GENERATE_HEADER_TEMPLATE.replace(
             "{{table_data_snippet}}", snippet
+        ).replace(
+            "{{sheet_name}}", sheet_name or "Unknown"
         )
-        print(table_rows)
-        exit()
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
