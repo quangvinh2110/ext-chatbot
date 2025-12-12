@@ -2,6 +2,7 @@ from typing import Any, Dict, Iterable, List, Literal, Sequence, Tuple, Union, O
 from sqlalchemy import (
     MetaData,
     Table,
+    Column,
     create_engine,
     inspect,
     text,
@@ -107,7 +108,7 @@ class SQLiteDatabase:
         table_name: str,
         get_col_comments: bool = False,
         allowed_col_names: Optional[List[str]] = None,
-        sample_row_ids: Optional[List[int]] = None,
+        sample_count: Optional[int] = None,
     ) -> str:
         """
         Get information about a specified table.
@@ -117,8 +118,8 @@ class SQLiteDatabase:
             get_col_comments: Whether to include column comments in the output
             allowed_col_names: If provided, only include these columns in the output.
                               If None, include all columns.
-            sample_row_ids: List of row IDs to sample. If provided, sample rows with
-                           these IDs using ROWID. If None, no sample rows are included.
+            sample_count: Number of distinct example values to include for each column.
+                          If None, no example values are included.
 
         Returns:
             String containing table schema (CREATE TABLE statement) and optionally
@@ -161,6 +162,13 @@ class SQLiteDatabase:
         if not display_columns:
             raise ValueError(f"No matching columns found. Requested: {allowed_col_names}")
 
+        # Get sample values for columns if requested
+        column_sample_values: Dict[str, List[str]] = {}
+        if sample_count:
+            column_sample_values = self._get_sample_values(
+                table, display_columns, sample_count
+            )
+
         # Build custom CREATE TABLE statement with filtered columns
         col_defs = []
         column_descriptions = (
@@ -171,9 +179,23 @@ class SQLiteDatabase:
         for col in display_columns:
             col_type = str(col.type) if not isinstance(col.type, NullType) else "TEXT"
             col_def = f'\t"{col.name}" {col_type}'
+            
+            # Build comment with description and example values
+            comment_parts = []
             col_cmt = column_descriptions.get(col.name, "")
             if col_cmt:
-                col_def = f"{col_def}\t/* {col_cmt} */"
+                comment_parts.append(col_cmt)
+            
+            # Add sample values if available
+            if col.name in column_sample_values and column_sample_values[col.name]:
+                sample_values = column_sample_values[col.name]
+                examples_str = ", ".join(str(v) for v in sample_values)
+                comment_parts.append(f"ví dụ: {examples_str},...")
+            
+            if comment_parts:
+                comment_text = " | ".join(comment_parts)
+                col_def = f"{col_def}\t/* {comment_text} */"
+            
             col_defs.append(col_def)
 
         col_defs.sort()        
@@ -181,18 +203,10 @@ class SQLiteDatabase:
 
         table_info = f"{create_table.rstrip()}"
             
-        # Add indexes and sample rows
-        has_extra_info = self._indexes_in_table_info or sample_row_ids
-        if has_extra_info:
-            table_info += "\n\n/*"
-        
+        # Add indexes if needed
         if self._indexes_in_table_info:
+            table_info += "\n\n/*"
             table_info += f"\n{self._get_table_indexes(table)}\n"
-        
-        if sample_row_ids:
-            table_info += f"\n{self._get_sample_rows_by_ids(table, sample_row_ids, allowed_col_names)}\n"
-        
-        if has_extra_info:
             table_info += "*/"
 
         return table_info
@@ -269,54 +283,46 @@ class SQLiteDatabase:
         return f"Table Indexes:\n{indexes_formatted}"
 
 
-    def _get_sample_rows_by_ids(
+    def _get_sample_values(
         self,
         table: Table,
-        row_ids: List[int],
-        allowed_col_names: Optional[List[str]] = None,
-    ) -> str:
+        columns: List[Column],
+        sample_count: int,
+    ) -> Dict[str, List[str]]:
         """
-        Get sample rows by their ROWID.
+        Get up to sample_count distinct example values per column.
 
-        Args:
-            table: SQLAlchemy Table object
-            row_ids: List of ROWIDs to fetch
-            allowed_col_names: If provided, only include these columns
-
-        Returns:
-            Formatted string with sample rows
+        Strings are quoted to reflect their type. Values longer than 100 chars are skipped.
         """
-        if allowed_col_names:
-            columns = [col for col in table.columns if col.name in allowed_col_names]
-        else:
-            columns = list(table.columns)
+        if sample_count <= 0:
+            return {}
 
-        columns_str = "\t".join([col.name for col in columns])
+        column_sample_values: Dict[str, List[str]] = {col.name: [] for col in columns}
+        for col in columns:
+            query = text(
+                f'SELECT DISTINCT "{col.name}" '
+                f'FROM "{table.name}" '
+                f'WHERE "{col.name}" IS NOT NULL '
+                f"LIMIT {sample_count}"
+            )
 
-        try:
-            # Build query with ROWID filter
-            col_names = [f'"{col.name}"' for col in columns]
-            col_list = ", ".join(col_names)
-            id_list = ", ".join(str(rid) for rid in row_ids)
-            query = f'SELECT {col_list} FROM "{table.name}" WHERE ROWID IN ({id_list})'
+            try:
+                with self._engine.connect() as connection:
+                    result = connection.execute(query)
+                    remaining_length = 1000
+                    for val, in result:
+                        val_str = str(val)
+                        # Represent type: quote strings, leave others as-is
+                        display_val = f'"{val_str}"' if isinstance(val, str) else val_str
+                        column_sample_values[col.name].append(display_val)
+                        remaining_length -= len(display_val)
+                        if remaining_length <= 0:
+                            break
 
-            with self._engine.connect() as connection:
-                result = connection.execute(text(query))
-                sample_rows = [
-                    [str(val)[:100] for val in row]
-                    for row in result
-                ]
+            except ProgrammingError:
+                continue
 
-            sample_rows_str = "\n".join(["\t".join(row) for row in sample_rows])
-
-        except ProgrammingError:
-            sample_rows_str = ""
-
-        return (
-            f"{len(row_ids)} sample rows from {table.name} table (by ROWID):\n"
-            f"{columns_str}\n"
-            f"{sample_rows_str}"
-        )
+        return column_sample_values
 
 
     def _execute(
@@ -421,7 +427,7 @@ class SQLiteDatabase:
         table_name: str,
         get_col_comments: bool = False,
         allowed_col_names: Optional[List[str]] = None,
-        sample_row_ids: Optional[List[int]] = None,
+        sample_count: Optional[int] = None,
     ) -> str:
         """Get table info without throwing exceptions."""
         try:
@@ -429,7 +435,7 @@ class SQLiteDatabase:
                 table_name,
                 get_col_comments=get_col_comments,
                 allowed_col_names=allowed_col_names,
-                sample_row_ids=sample_row_ids,
+                sample_count=sample_count,
             )
         except ValueError as e:
             return f"Error: {e}"
