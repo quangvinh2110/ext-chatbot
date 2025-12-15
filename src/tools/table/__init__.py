@@ -1,6 +1,7 @@
-from .utils import create_sqlite_table
+from .utils import create_sqlite, create_faiss
 
 
 __all__ = [
-    "create_sqlite_table",
+    "create_sqlite",
+    "create_faiss",
 ]

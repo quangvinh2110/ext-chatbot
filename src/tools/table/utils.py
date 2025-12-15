@@ -1,6 +1,51 @@
 import sqlite3
+import faiss
+import numpy as np
+import requests
 import re
-from typing import Dict, Any, List, Optional
+import os
+import json
+from typing import Dict, Any, List, Optional, Iterable
+from tqdm import tqdm
+
+
+def _safe_filename(name: str) -> str:
+    """Make a reasonably safe filename from table/column names."""
+    if not isinstance(name, str):
+        name = str(name)
+    # Keep unicode but remove path separators and problematic chars
+    name = name.replace(os.sep, "_").replace("\x00", "_")
+    name = re.sub(r"[<>:\"/\\|?*\n\r\t]+", "_", name).strip()
+    return name or "unnamed"
+
+
+def _ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+
+def _call_embed(text_list: List[str], model: str = "Embed-ver01") -> List[List[float]]:
+    """
+    Call embedding API and return list of embeddings.
+
+    This mirrors `test_api.py:call_embed` but returns only the embeddings.
+    """
+    url = "https://dev-llm-ailab.zalo.ai/v1/embeddings"
+    headers = {"Content-Type": "application/json"}
+    payload = {"model": model, "input": text_list}
+
+    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict) or "data" not in data:
+        raise ValueError(f"Unexpected embedding response: {data}")
+
+    embeddings: List[List[float]] = []
+    for item in data["data"]:
+        emb = item.get("embedding")
+        if emb is None:
+            raise ValueError(f"Missing embedding in response item: {item}")
+        embeddings.append(emb)
+    return embeddings
 
 
 def truncate_word(content: Any, *, length: int, suffix: str = "...") -> str:
@@ -25,7 +70,7 @@ def pydantic_to_sqlite_type(pydantic_type: str) -> str:
     return type_mapping.get(pydantic_type.lower(), 'TEXT')
 
 
-def create_sqlite_table(
+def create_sqlite(
     schema: Dict[str, Any],
     column_groups: List[List[str]],
     data: List[Dict[str, Any]],
@@ -200,5 +245,222 @@ def create_sqlite_table(
     except Exception as e:
         conn.rollback()
         raise e
+    finally:
+        conn.close()
+
+
+def _get_text_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
+    cursor = conn.cursor()
+    cursor.execute(f'PRAGMA table_info("{table_name}")')
+    cols = cursor.fetchall()
+    # PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
+    text_cols: List[str] = []
+    for _, col_name, col_type, *_rest in cols:
+        if not col_type:
+            continue
+        if "TEXT" in str(col_type).upper():
+            text_cols.append(col_name)
+    return text_cols
+
+
+def _iter_text_values(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    *,
+    distinct: bool = True,
+) -> Iterable[str]:
+    cursor = conn.cursor()
+    distinct_sql = "DISTINCT " if distinct else ""
+    cursor.execute(
+        f'SELECT {distinct_sql}"{column_name}" FROM "{table_name}" WHERE "{column_name}" IS NOT NULL'
+    )
+    for (val,) in cursor.fetchall():
+        # Keep as string for embedding
+        if val is None:
+            continue
+        yield str(val)
+
+        
+
+def create_faiss(
+    schema: Dict[str, Any],
+    db_path: str,
+    faiss_dir: str,
+    table_name: Optional[str] = None,
+    *,
+    if_exists: str = "replace",  # "replace", "append", or "fail"
+    embed_model: str = "Embed-ver01",
+    batch_size: int = 128,
+    distinct_values: bool = True,
+    normalize: bool = True,
+    max_text_length: int = 512,
+) -> Dict[str, Any]:
+    """
+    Build FAISS indexes for every TEXT column in the given SQLite table.
+
+    The signature intentionally mirrors `create_sqlite_table(...)` so you can call it
+    right after creating/importing the table.
+
+    Output layout (per TEXT column):
+      {faiss_dir}/{db_stem}/{table_name}/{column_name}.faiss
+      {faiss_dir}/{db_stem}/{table_name}/{column_name}.json   (list of values aligned to vectors)
+
+    Returns:
+        Summary dict with created indexes and counts.
+    """
+    # Determine table name (same rule as create_sqlite_table)
+    if table_name is None:
+        table_name = schema.get("title", "RowData")
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be > 0")
+
+    db_stem = os.path.splitext(os.path.basename(db_path))[0] or "database"
+    table_dir = os.path.join(faiss_dir, _safe_filename(db_stem), _safe_filename(table_name))
+    _ensure_dir(table_dir)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        text_cols = _get_text_columns(conn, table_name)
+        created: List[Dict[str, Any]] = []
+
+        for col in text_cols:
+            index_path = os.path.join(table_dir, f"{_safe_filename(col)}.faiss")
+            values_path = os.path.join(table_dir, f"{_safe_filename(col)}.json")
+
+            if if_exists == "fail" and (os.path.exists(index_path) or os.path.exists(values_path)):
+                raise FileExistsError(f"FAISS artifacts already exist for {table_name}.{col}")
+
+            existing_values: List[str] = []
+            existing_set = set()
+            index = None
+
+            if if_exists == "replace":
+                # Remove any previous artifacts for this column
+                for p in (index_path, values_path):
+                    if os.path.exists(p):
+                        os.remove(p)
+            elif if_exists == "append":
+                if os.path.exists(values_path):
+                    with open(values_path, "r", encoding="utf-8") as f:
+                        existing_values = json.load(f) or []
+                    if not isinstance(existing_values, list):
+                        raise ValueError(f"Unexpected mapping file format: {values_path}")
+                    existing_set = set(str(x) for x in existing_values)
+                if os.path.exists(index_path):
+                    index = faiss.read_index(index_path)
+            elif if_exists not in ("replace", "append", "fail"):
+                raise ValueError(
+                    f"Invalid if_exists value: {if_exists}. Must be 'replace', 'append', or 'fail'"
+                )
+
+            # Collect values to embed
+            values: List[str] = []
+            for v in _iter_text_values(conn, table_name, col, distinct=distinct_values):
+                v = v.strip()
+                if not v:
+                    continue
+                if max_text_length and len(v) > max_text_length:
+                    v = v[:max_text_length]
+                if existing_set and v in existing_set:
+                    continue
+                values.append(v)
+
+            # Nothing new to add
+            if not values and index is not None and existing_values:
+                created.append(
+                    {
+                        "table": table_name,
+                        "column": col,
+                        "index_path": index_path,
+                        "values_path": values_path,
+                        "added": 0,
+                        "total": len(existing_values),
+                    }
+                )
+                continue
+
+            # Initialize index if needed (we'll determine dim from first batch)
+            d = None
+            total_added = 0
+
+            # Embed in batches and add incrementally to avoid memory issues
+            # This way we only hold one batch in RAM at a time
+            with tqdm(
+                total=len(values),
+                desc=f"Embedding {table_name}.{col}",
+                unit="values"
+            ) as pbar:
+                for i in range(0, len(values), batch_size):
+                    batch = values[i : i + batch_size]
+                    
+                    # Embed this batch
+                    batch_vectors = _call_embed(batch, model=embed_model)
+                    
+                    if not batch_vectors:
+                        pbar.update(len(batch))
+                        continue
+                    
+                    # Convert to numpy array
+                    x = np.asarray(batch_vectors, dtype="float32")
+                    if x.ndim != 2:
+                        raise ValueError(f"Unexpected embedding matrix shape: {x.shape}")
+                    
+                    # Determine dimension from first batch
+                    if d is None:
+                        d = int(x.shape[1])
+                        if index is None:
+                            index = faiss.IndexFlatIP(d) if normalize else faiss.IndexFlatL2(d)
+                    elif x.shape[1] != d:
+                        raise ValueError(
+                            f"Embedding dimension mismatch: expected {d}, got {x.shape[1]}"
+                        )
+                    
+                    # Normalize if needed
+                    if normalize:
+                        faiss.normalize_L2(x)
+                    
+                    # Add to index immediately (incremental, memory-efficient)
+                    index.add(x)
+                    total_added += len(batch)
+                    pbar.update(len(batch))
+
+            # Build final values list
+            final_values = existing_values + values
+
+            # Save index and mapping if we have an index (either loaded or newly created)
+            if index is not None:
+                # Persist artifacts
+                faiss.write_index(index, index_path)
+                with open(values_path, "w", encoding="utf-8") as f:
+                    json.dump(final_values, f, ensure_ascii=False)
+            elif total_added == 0 and not existing_values:
+                # No index was created and no existing values - save empty mapping only
+                with open(values_path, "w", encoding="utf-8") as f:
+                    json.dump([], f, ensure_ascii=False)
+            
+            created.append(
+                {
+                    "table": table_name,
+                    "column": col,
+                    "index_path": index_path,
+                    "values_path": values_path,
+                    "added": total_added,
+                    "total": len(final_values),
+                    "dim": d if d is not None else None,
+                    "normalize": normalize,
+                    "distinct_values": distinct_values,
+                    "embed_model": embed_model,
+                }
+            )
+
+        return {
+            "db_path": db_path,
+            "table_name": table_name,
+            "faiss_dir": table_dir,
+            "text_columns": text_cols,
+            "indexes": created,
+        }
     finally:
         conn.close()
