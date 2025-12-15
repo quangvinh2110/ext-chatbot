@@ -1,5 +1,6 @@
 import json
 import os
+import asyncio
 from typing import Any, Dict, Iterable, List, Literal, Sequence, Tuple, Union, Optional
 
 import faiss
@@ -574,49 +575,144 @@ class SQLiteDatabase:
                     continue
 
 
-    def search_similar_value(
+    async def batch_search_similar_values(
         self,
-        table_name: str,
-        column_name: str,
-        cell_value: str,
-        *,
+        batch_cells: List[Tuple[str, str, str]],
         k: int = 5,
-    ) -> List[Dict[str, Any]]:
+        max_concurrency: int = 10,
+    ) -> List[List[Dict[str, Any]]]:
         """
-        Find top-k semantically similar values for a given table/column entry.
+        Asynchronously search for similar values for a batch of cells.
+        
+        Args:
+            batch_cells: List of (table_name, column_name, cell_value) tuples.
+            k: Number of nearest neighbors to retrieve.
+            max_concurrency: Maximum number of concurrent threads for FAISS searching.
 
-        Returns a list of {"value": <db_value>, "score": <float>} sorted by score.
+        Returns:
+            A list of result lists corresponding to the order of input batch_cells.
+            If an index is missing for a cell, returns an empty list for that slot.
         """
         if not self._faiss_indexes:
             raise ValueError("FAISS indexes are not loaded for this database")
+        if self._faiss_embeddings is None:
+            raise ValueError("Embeddings client is not configured")
 
-        table_indexes = self._faiss_indexes.get(table_name)
-        if not table_indexes or column_name not in table_indexes:
-            raise ValueError(
-                f"No FAISS index found for {table_name}.{column_name}. "
-                f"Available: {sorted(table_indexes.keys()) if table_indexes else []}"
+        # 1. Validation and preparation
+        valid_queries = []
+        valid_indices = []
+        texts_to_embed = []
+        
+        # Initialize results with empty lists (preserving order)
+        results: List[List[Dict[str, Any]]] = [[] for _ in batch_cells]
+
+        for i, (table, col, val) in enumerate(batch_cells):
+            table_indexes = self._faiss_indexes.get(table)
+            if table_indexes and col in table_indexes:
+                valid_queries.append((table, col))
+                valid_indices.append(i)
+                texts_to_embed.append(str(val))
+            # Note: Invalid cells (no index found) remain [] in the results list
+
+        if not valid_queries:
+            return results
+
+        # 2. Batch Embedding (I/O Bound)
+        # Use the async batch embedding method from LangChain
+        embeddings = await self._get_batch_embeddings(texts_to_embed)
+
+        # 3. Parallel FAISS Search (CPU Bound, offloaded to threads)
+        semaphore = asyncio.Semaphore(max_concurrency)
+        tasks = []
+
+        for i, embedding in zip(valid_indices, embeddings):
+            table_name, column_name = batch_cells[i][0], batch_cells[i][1]
+            index_data = self._faiss_indexes[table_name][column_name]
+            
+            task = self._execute_search_with_semaphore(
+                semaphore=semaphore,
+                index_data=index_data,
+                vector=embedding,
+                k=k
             )
+            tasks.append(task)
 
+        # Wait for all search tasks to complete
+        search_results = await asyncio.gather(*tasks)
+
+        # 4. Map results back to original positions
+        for original_idx, res in zip(valid_indices, search_results):
+            results[original_idx] = res
+
+        return results
+
+
+    async def _get_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Helper to fetch embeddings asynchronously."""
         if self._faiss_embeddings is None:
             raise ValueError("Infinity embeddings client is not configured")
+        if not hasattr(self._faiss_embeddings, "aembed_documents"):
+            raise ValueError("Infinity embeddings client does not support aembed_documents")
+        return await self._faiss_embeddings.aembed_documents(texts)
 
-        entry = table_indexes[column_name]
-        index: faiss.Index = entry["index"]
-        values: List[str] = entry["values"]
-        normalize = bool(entry["normalize"])
 
-        query_vec = self._faiss_embeddings.embed_query(str(cell_value))
-        x = np.asarray(query_vec, dtype="float32")
-        if x.ndim != 1:
-            raise ValueError(f"Unexpected query embedding shape: {x.shape}")
-        x = x.reshape(1, -1)
+    async def _execute_search_with_semaphore(
+        self,
+        semaphore: asyncio.Semaphore,
+        index_data: Dict[str, Any],
+        vector: List[float],
+        k: int
+    ) -> List[Dict[str, Any]]:
+        """Acquires semaphore and offloads CPU work to a thread."""
+        await semaphore.acquire()
+        try:
+            return await asyncio.to_thread(
+                self._run_faiss_search_job,
+                index=index_data["index"],
+                values=index_data["values"],
+                normalize=index_data["normalize"],
+                vector=vector,
+                k=k
+            )
+        except Exception as e:
+            raise e
+        finally:
+            semaphore.release()
+
+
+    @staticmethod
+    def _run_faiss_search_job(
+        index: Any,
+        values: List[str],
+        normalize: bool,
+        vector: List[float],
+        k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Pure CPU-bound static method to perform the FAISS search.
+        Running this in a separate thread avoids blocking the asyncio event loop.
+        """
+        x = np.asarray(vector, dtype="float32")
+        
+        # Ensure correct shape (1, embedding_dim)
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+
         if normalize:
             faiss.normalize_L2(x)
+
         distances, indices = index.search(x, min(k, len(values)))
+        
         results: List[Dict[str, Any]] = []
-        for idx, score in zip(indices[0], distances[0]):
+        found_indices = indices[0]
+        found_distances = distances[0]
+
+        for idx, score in zip(found_indices, found_distances):
             if idx < 0 or idx >= len(values):
                 continue
-            results.append({"value": values[int(idx)], "score": float(score)})
-
+            results.append({
+                "value": values[int(idx)],
+                "score": float(score)
+            })
+            
         return results
