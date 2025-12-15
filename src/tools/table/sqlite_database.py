@@ -17,13 +17,29 @@ from .utils import truncate_word
 class SQLiteDatabase:
     """SQLAlchemy wrapper around a SQLite database with column comments support."""
 
+    def _render_type(self, col_type: Any, *, default: str = "TEXT") -> str:
+        """Render SQLAlchemy type using this engine's dialect when possible."""
+        if col_type is None or isinstance(col_type, NullType):
+            return default
+        try:
+            compiled = col_type.compile(dialect=self._engine.dialect)
+            if isinstance(compiled, str) and compiled.strip():
+                return compiled.strip()
+        except Exception:
+            pass
+        try:
+            rendered = str(col_type)
+            return rendered.strip() if rendered.strip() else default
+        except Exception:
+            return default
+
     def __init__(
         self,
         engine: Engine,
         ignore_tables: Optional[List[str]] = None,
         include_tables: Optional[List[str]] = None,
         indexes_in_table_info: bool = False,
-        max_string_length: int = 300,
+        max_string_length: int = 200,
         lazy_table_reflection: bool = False,
     ):
         """
@@ -88,7 +104,7 @@ class SQLiteDatabase:
     @property
     def dialect(self) -> str:
         """Return string representation of dialect to use."""
-        return "sqlite"
+        return "SQLite"
 
 
     def get_usable_table_names(self) -> Iterable[str]:
@@ -101,6 +117,39 @@ class SQLiteDatabase:
         # filter out metadata tables (companion EAV tables)
         base = {tbl for tbl in base if not tbl.endswith("__metadata")}
         return sorted(base)
+
+
+    def get_column_datatype(
+        self,
+        table_name: str,
+        column_name: str,
+        default: str = "TEXT",
+    ) -> str:
+        """
+        Return SQL datatype for a column in a table.
+
+        Notes:
+        - Uses SQLAlchemy inspector, so it does not require table reflection.
+        - Returns `default` when the table/column is not found or the type is unknown.
+        """
+        all_table_names = set(self.get_usable_table_names())
+        if table_name not in all_table_names:
+            raise ValueError(
+                f"Table '{table_name}' not found in database. Available tables: {sorted(all_table_names)}"
+            )
+
+        try:
+            cols = self._inspector.get_columns(table_name)
+        except SQLAlchemyError:
+            return default
+
+        for col in cols:
+            if col.get("name") != column_name:
+                continue
+            col_type = col.get("type")
+            return self._render_type(col_type, default=default)
+
+        return default
 
 
     def get_table_info(
@@ -177,7 +226,7 @@ class SQLiteDatabase:
             else {}
         )
         for col in display_columns:
-            col_type = str(col.type) if not isinstance(col.type, NullType) else "TEXT"
+            col_type = self._render_type(col.type, default="TEXT")
             col_def = f'\t"{col.name}" {col_type}'
             
             # Build comment with description and example values
@@ -190,10 +239,10 @@ class SQLiteDatabase:
             if col.name in column_sample_values and column_sample_values[col.name]:
                 sample_values = column_sample_values[col.name]
                 examples_str = ", ".join(str(v) for v in sample_values)
-                comment_parts.append(f"ví dụ: {examples_str},...")
+                comment_parts.append(f"Ví dụ: {examples_str},...")
             
             if comment_parts:
-                comment_text = " | ".join(comment_parts)
+                comment_text = " ".join(comment_parts)
                 col_def = f"{col_def}\t/* {comment_text} */"
             
             col_defs.append(col_def)
