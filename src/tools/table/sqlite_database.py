@@ -51,6 +51,7 @@ class SQLiteDatabase:
         lazy_table_reflection: bool = False,
         faiss_dir: Optional[str] = None,
         embeddings: Optional[Embeddings] = None,
+        concurrency_limit: int = 10,
     ):
         """
         Create SQLite database wrapper.
@@ -97,6 +98,7 @@ class SQLiteDatabase:
         self._faiss_dir = faiss_dir
         self._faiss_indexes: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._faiss_embeddings = embeddings
+        self._semaphore = asyncio.Semaphore(concurrency_limit)
 
         self._metadata = MetaData()
         if not lazy_table_reflection:
@@ -427,16 +429,18 @@ class SQLiteDatabase:
         return []
 
 
-    def run(
+    def _run_sync(
         self,
         command: str,
-        fetch: Literal["all", "one", "cursor"] = "all",
-        include_columns: bool = False,
-        *,
-        parameters: Optional[Dict[str, Any]] = None,
-        execution_options: Optional[Dict[str, Any]] = None,
+        fetch: Literal["all", "one", "cursor"],
+        include_columns: bool,
+        parameters: Optional[Dict[str, Any]],
+        execution_options: Optional[Dict[str, Any]],
     ) -> Union[Sequence[Dict[str, Any]], Sequence[Tuple[Any, ...]], Result[Any]]:
-        """Execute a SQL command and return a string representing the results."""
+        """
+        Helper method containing the synchronous logic for `run`.
+        This handles the CPU-bound result formatting after the IO-bound execution.
+        """
         result = self._execute(
             command, fetch, parameters=parameters, execution_options=execution_options
         )
@@ -462,7 +466,36 @@ class SQLiteDatabase:
             ]
 
 
-    def run_no_throw(
+    async def run(
+        self,
+        command: str,
+        fetch: Literal["all", "one", "cursor"] = "all",
+        include_columns: bool = False,
+        *,
+        parameters: Optional[Dict[str, Any]] = None,
+        execution_options: Optional[Dict[str, Any]] = None,
+    ) -> Union[Sequence[Dict[str, Any]], Sequence[Tuple[Any, ...]], Result[Any]]:
+        """
+        Execute a SQL command asynchronously.
+        Offloads the blocking SQLAlchemy call to a separate thread.
+        """
+        await self._semaphore.acquire()
+        try:
+            return await asyncio.to_thread(
+                self._run_sync,
+                command,
+                fetch,
+                include_columns,
+                parameters,
+                execution_options,
+            )
+        except Exception as e:
+            raise e
+        finally:
+            self._semaphore.release()
+
+
+    async def run_no_throw(
         self,
         command: str,
         fetch: Literal["all", "one"] = "all",
@@ -473,7 +506,7 @@ class SQLiteDatabase:
     ) -> Dict[str, Any]:
         """Execute a SQL command and return results or error message."""
         try:
-            res = self.run(
+            res = await self.run(
                 command,
                 fetch,
                 parameters=parameters,
@@ -622,7 +655,6 @@ class SQLiteDatabase:
         embeddings = await self._get_batch_embeddings(texts_to_embed)
 
         # 3. Parallel FAISS Search (CPU Bound, offloaded to threads)
-        semaphore = asyncio.Semaphore(max_concurrency)
         tasks = []
 
         for i, embedding in zip(valid_indices, embeddings):
@@ -630,7 +662,7 @@ class SQLiteDatabase:
             index_data = self._faiss_indexes[table_name][column_name]
             
             task = self._execute_search_with_semaphore(
-                semaphore=semaphore,
+                semaphore=self._semaphore,
                 index_data=index_data,
                 vector=embedding,
                 k=k
