@@ -6,6 +6,7 @@ import os
 import json
 from typing import Dict, Any, List, Optional, Iterable
 from tqdm import tqdm
+
 from ...utils.client import get_infinity_embeddings
 
 

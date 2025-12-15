@@ -1,4 +1,9 @@
+import json
+import os
 from typing import Any, Dict, Iterable, List, Literal, Sequence, Tuple, Union, Optional
+
+import faiss
+import numpy as np
 from sqlalchemy import (
     MetaData,
     Table,
@@ -11,7 +16,9 @@ from sqlalchemy.engine import Engine, Result
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.types import NullType
 
-from .utils import truncate_word
+from langchain_core.embeddings import Embeddings
+
+from .utils import truncate_word, _safe_filename
 
 
 class SQLiteDatabase:
@@ -41,6 +48,8 @@ class SQLiteDatabase:
         indexes_in_table_info: bool = False,
         max_string_length: int = 200,
         lazy_table_reflection: bool = False,
+        faiss_dir: Optional[str] = None,
+        embeddings: Optional[Embeddings] = None,
     ):
         """
         Create SQLite database wrapper.
@@ -52,6 +61,10 @@ class SQLiteDatabase:
             indexes_in_table_info: Whether to include index information in table info
             max_string_length: Maximum string length for truncating values
             lazy_table_reflection: Whether to lazily reflect tables
+            faiss_dir: Root directory that stores FAISS artifacts (see create_faiss)
+            embeddings: Optional pre-initialized InfinityEmbeddings instance to reuse
+            embed_model: Model name for InfinityEmbeddings (used when embeddings is None)
+            infinity_api_url: Infinity API endpoint (used when embeddings is None)
         """
         self._engine = engine
         if self._engine.dialect.name != "sqlite":
@@ -80,6 +93,9 @@ class SQLiteDatabase:
 
         self._indexes_in_table_info = indexes_in_table_info
         self._max_string_length = max_string_length
+        self._faiss_dir = faiss_dir
+        self._faiss_indexes: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._faiss_embeddings = embeddings
 
         self._metadata = MetaData()
         if not lazy_table_reflection:
@@ -87,6 +103,9 @@ class SQLiteDatabase:
                 bind=self._engine,
                 only=list(self._usable_tables),
             )
+
+        if self._faiss_dir:
+            self._load_faiss_indexes()
 
 
     @classmethod
@@ -499,3 +518,105 @@ class SQLiteDatabase:
             table_infos.append(self.get_table_info_no_throw(tbl))
         table_info = "\n\n".join(table_infos)
         return {"table_info": table_info, "table_names": ", ".join(table_names)}
+
+
+    def _load_faiss_indexes(self) -> None:
+        """Eagerly load FAISS indexes and their value mappings if the directory is present."""
+        if not self._faiss_dir:
+            return
+
+        for table_name in self._usable_tables:
+            table_dir = os.path.join(
+                self._faiss_dir,
+                _safe_filename(table_name),
+            )
+            if not os.path.isdir(table_dir):
+                continue
+
+            # Build a lookup of column names to quickly check candidate files.
+            try:
+                columns = {c["name"] for c in self._inspector.get_columns(table_name)}
+            except SQLAlchemyError:
+                continue
+
+            for col_name in columns:
+                index_path = os.path.join(
+                    table_dir, f"{_safe_filename(col_name)}.faiss"
+                )
+                values_path = os.path.join(
+                    table_dir, f"{_safe_filename(col_name)}.json"
+                )
+                if not (os.path.exists(index_path) and os.path.exists(values_path)):
+                    continue
+
+                try:
+                    index = faiss.read_index(index_path)
+                    with open(values_path, "r", encoding="utf-8") as f:
+                        values = json.load(f) or []
+                    if not isinstance(values, list):
+                        continue
+
+                    metric = getattr(index, "metric_type", None)
+                    normalize = metric == faiss.METRIC_INNER_PRODUCT
+
+                    # Guard against mismatched artifacts.
+                    if hasattr(index, "ntotal") and index.ntotal != len(values):
+                        # Skip inconsistent artifacts to avoid incorrect lookups.
+                        continue
+
+                    self._faiss_indexes.setdefault(table_name, {})[col_name] = {
+                        "index": index,
+                        "values": values,
+                        "normalize": normalize,
+                    }
+                except Exception:
+                    # Ignore malformed artifacts; consumers can still use SQL methods.
+                    continue
+
+
+    def search_similar_value(
+        self,
+        table_name: str,
+        column_name: str,
+        cell_value: str,
+        *,
+        k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Find top-k semantically similar values for a given table/column entry.
+
+        Returns a list of {"value": <db_value>, "score": <float>} sorted by score.
+        """
+        if not self._faiss_indexes:
+            raise ValueError("FAISS indexes are not loaded for this database")
+
+        table_indexes = self._faiss_indexes.get(table_name)
+        if not table_indexes or column_name not in table_indexes:
+            raise ValueError(
+                f"No FAISS index found for {table_name}.{column_name}. "
+                f"Available: {sorted(table_indexes.keys()) if table_indexes else []}"
+            )
+
+        if self._faiss_embeddings is None:
+            raise ValueError("Infinity embeddings client is not configured")
+
+        entry = table_indexes[column_name]
+        index: faiss.Index = entry["index"]
+        values: List[str] = entry["values"]
+        normalize = bool(entry["normalize"])
+
+        query_vec = self._faiss_embeddings.embed_query(str(cell_value))
+        x = np.asarray(query_vec, dtype="float32")
+        if x.ndim != 1:
+            raise ValueError(f"Unexpected query embedding shape: {x.shape}")
+        x = x.reshape(1, -1)
+        if normalize:
+            faiss.normalize_L2(x)
+        distances, indices = index.search(x, min(k, len(values)))
+        results: List[Dict[str, Any]] = []
+        for idx, score in zip(indices[0], distances[0]):
+            if idx < 0 or idx >= len(values):
+                continue
+            results.append({"value": values[int(idx)], "score": float(score)})
+
+        return results
