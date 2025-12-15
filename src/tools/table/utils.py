@@ -1,12 +1,12 @@
 import sqlite3
 import faiss
 import numpy as np
-import requests
 import re
 import os
 import json
 from typing import Dict, Any, List, Optional, Iterable
 from tqdm import tqdm
+from ...utils.client import get_infinity_embeddings
 
 
 def _safe_filename(name: str) -> str:
@@ -21,31 +21,6 @@ def _safe_filename(name: str) -> str:
 
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
-
-
-def _call_embed(text_list: List[str], model: str = "Embed-ver01") -> List[List[float]]:
-    """
-    Call embedding API and return list of embeddings.
-
-    This mirrors `test_api.py:call_embed` but returns only the embeddings.
-    """
-    url = "https://dev-llm-ailab.zalo.ai/v1/embeddings"
-    headers = {"Content-Type": "application/json"}
-    payload = {"model": model, "input": text_list}
-
-    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict) or "data" not in data:
-        raise ValueError(f"Unexpected embedding response: {data}")
-
-    embeddings: List[List[float]] = []
-    for item in data["data"]:
-        emb = item.get("embedding")
-        if emb is None:
-            raise ValueError(f"Missing embedding in response item: {item}")
-        embeddings.append(emb)
-    return embeddings
 
 
 def truncate_word(content: Any, *, length: int, suffix: str = "...") -> str:
@@ -290,7 +265,8 @@ def create_faiss(
     table_name: Optional[str] = None,
     *,
     if_exists: str = "replace",  # "replace", "append", or "fail"
-    embed_model: str = "Embed-ver01",
+    embed_model: str,
+    infinity_api_url: str,
     batch_size: int = 128,
     distinct_values: bool = True,
     normalize: bool = True,
@@ -308,6 +284,10 @@ def create_faiss(
 
     Returns:
         Summary dict with created indexes and counts.
+
+    Embeddings:
+        Uses `langchain_community.embeddings.InfinityEmbeddings`. Pass `infinity_api_url`
+        (typically ending with `/v1`) or set `INFINITY_API_URL`.
     """
     # Determine table name (same rule as create_sqlite_table)
     if table_name is None:
@@ -322,6 +302,15 @@ def create_faiss(
 
     conn = sqlite3.connect(db_path)
     try:
+        if infinity_api_url is None:
+            infinity_api_url = os.getenv("INFINITY_API_URL")
+        if not infinity_api_url:
+            raise ValueError(
+                "Missing infinity_api_url. Pass create_faiss(..., infinity_api_url=...) "
+                "or set INFINITY_API_URL (e.g. http://localhost:7797/v1)."
+            )
+
+        embeddings = get_infinity_embeddings(model=embed_model, infinity_api_url=infinity_api_url)
         text_cols = _get_text_columns(conn, table_name)
         created: List[Dict[str, Any]] = []
 
@@ -396,7 +385,7 @@ def create_faiss(
                     batch = values[i : i + batch_size]
                     
                     # Embed this batch
-                    batch_vectors = _call_embed(batch, model=embed_model)
+                    batch_vectors = embeddings.embed_documents(batch)
                     
                     if not batch_vectors:
                         pbar.update(len(batch))
@@ -422,6 +411,8 @@ def create_faiss(
                         faiss.normalize_L2(x)
                     
                     # Add to index immediately (incremental, memory-efficient)
+                    if index is None:
+                        raise RuntimeError("FAISS index was not initialized before adding vectors")
                     index.add(x)
                     total_added += len(batch)
                     pbar.update(len(batch))
