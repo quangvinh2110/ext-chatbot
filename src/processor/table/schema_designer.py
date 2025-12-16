@@ -73,9 +73,9 @@ class SchemaDesigner:
                     f", Errors from last attempt: {errors}"          
                 )
 
-        # Step 3: Merge all schemas
-        print("Merging schemas...")
-        merged_schema = self._merge_schemas([
+        # Step 3: Merge all schema
+        print("Merging schema...")
+        merged_schema = self._merge_schema([
             result["pydantic_schema"] for result in results
         ])
         
@@ -95,7 +95,7 @@ class SchemaDesigner:
             queue: List of data groups and column groups
             
         Returns:
-            List of schemas, one for each group
+            List of schema, one for each group
         """
         semaphore = asyncio.Semaphore(max_concurrent_requests)
         tasks = [
@@ -189,15 +189,15 @@ class SchemaDesigner:
             semaphore.release()
 
     
-    def _merge_schemas(
+    def _merge_schema(
         self, 
-        group_schemas: List[Dict[str, Any]],
+        group_schema: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
-        Merge multiple schemas into a single schema.
+        Merge multiple schema into a single schema.
         
         Args:
-            group_schemas: List of schemas from different groups
+            group_schema: List of schema from different groups
             
         Returns:
             Merged schema
@@ -207,9 +207,9 @@ class SchemaDesigner:
             "type": "object",
         }
         
-        # Merge properties from all schemas
+        # Merge properties from all schema
         all_properties: Dict[str, Any] = {}
-        for schema in group_schemas:
+        for schema in group_schema:
             if "properties" in schema:
                 all_properties.update(schema["properties"])
         merged_schema["properties"] = all_properties

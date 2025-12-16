@@ -610,21 +610,20 @@ class SQLiteDatabase:
 
     async def batch_search_similar_values(
         self,
-        batch_cells: List[Tuple[str, str, str]],
+        predicate_values: List[Tuple[str, str, str]],
         k: int = 5,
-        max_concurrency: int = 10,
-    ) -> List[List[Dict[str, Any]]]:
+    ) -> Dict[str, Dict[str, List[str]]]:
         """
-        Asynchronously search for similar values for a batch of cells.
+        Asynchronously search for similar values for a batch of predicate values.
         
         Args:
-            batch_cells: List of (table_name, column_name, cell_value) tuples.
+            predicate_values: List of (table_name, column_name, value) tuples.
             k: Number of nearest neighbors to retrieve.
-            max_concurrency: Maximum number of concurrent threads for FAISS searching.
 
         Returns:
-            A list of result lists corresponding to the order of input batch_cells.
-            If an index is missing for a cell, returns an empty list for that slot.
+            Mapping of table_name -> column_name -> list of similar values (no scores).
+            If an index is missing for a predicate value, that table/column entry is an
+            empty list.
         """
         if not self._faiss_indexes:
             raise ValueError("FAISS indexes are not loaded for this database")
@@ -636,16 +635,18 @@ class SQLiteDatabase:
         valid_indices = []
         texts_to_embed = []
         
-        # Initialize results with empty lists (preserving order)
-        results: List[List[Dict[str, Any]]] = [[] for _ in batch_cells]
+        # Initialize results mapping table -> column -> list of values
+        results: Dict[str, Dict[str, List[str]]] = {}
+        for table, col, _ in predicate_values:
+            results.setdefault(table, {}).setdefault(col, [])
 
-        for i, (table, col, val) in enumerate(batch_cells):
+        for i, (table, col, val) in enumerate(predicate_values):
             table_indexes = self._faiss_indexes.get(table)
             if table_indexes and col in table_indexes:
                 valid_queries.append((table, col))
                 valid_indices.append(i)
                 texts_to_embed.append(str(val))
-            # Note: Invalid cells (no index found) remain [] in the results list
+            # Note: Invalid predicate values (no index found) remain [] in the results mapping
 
         if not valid_queries:
             return results
@@ -658,7 +659,7 @@ class SQLiteDatabase:
         tasks = []
 
         for i, embedding in zip(valid_indices, embeddings):
-            table_name, column_name = batch_cells[i][0], batch_cells[i][1]
+            table_name, column_name = predicate_values[i][0], predicate_values[i][1]
             index_data = self._faiss_indexes[table_name][column_name]
             
             task = self._execute_search_with_semaphore(
@@ -672,9 +673,15 @@ class SQLiteDatabase:
         # Wait for all search tasks to complete
         search_results = await asyncio.gather(*tasks)
 
-        # 4. Map results back to original positions
+        # 4. Map results back to table/column buckets (drop scores)
         for original_idx, res in zip(valid_indices, search_results):
-            results[original_idx] = res
+            table_name, column_name, _ = predicate_values[original_idx]
+            value_list = [
+                str(r["value"])
+                for r in res
+                if isinstance(r, dict) and "value" in r and r["value"] is not None
+            ]
+            results[table_name][column_name].extend(value_list)
 
         return results
 
