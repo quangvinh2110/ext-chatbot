@@ -181,6 +181,7 @@ class SQLiteDatabase:
         get_col_comments: bool = False,
         allowed_col_names: Optional[List[str]] = None,
         sample_count: Optional[int] = None,
+        column_sample_values: Optional[Dict[str, List[str]]] = None,
     ) -> str:
         """
         Get information about a specified table.
@@ -191,7 +192,13 @@ class SQLiteDatabase:
             allowed_col_names: If provided, only include these columns in the output.
                               If None, include all columns.
             sample_count: Number of distinct example values to include for each column.
-                          If None, no example values are included.
+                          If None, no example values are included (unless provided via
+                          column_sample_values).
+            column_sample_values: Optional mapping from column name to a list of
+                          precomputed example values. For columns present in this
+                          mapping, these values are used directly. For remaining
+                          columns, example values are fetched via `_get_sample_values`
+                          when sample_count is provided.
 
         Returns:
             String containing table schema (CREATE TABLE statement) and optionally
@@ -234,12 +241,22 @@ class SQLiteDatabase:
         if not display_columns:
             raise ValueError(f"No matching columns found. Requested: {allowed_col_names}")
 
-        # Get sample values for columns if requested
-        column_sample_values: Dict[str, List[str]] = {}
+        # Get sample values for columns:
+        # - Prefer values passed in via column_sample_values for those columns.
+        # - For remaining columns, fetch values via _get_sample_values when sample_count is set.
+        provided_sample_values: Dict[str, List[str]] = column_sample_values or {}
+        fetched_sample_values: Dict[str, List[str]] = {}
         if sample_count:
-            column_sample_values = self._get_sample_values(
-                table, display_columns, sample_count
-            )
+            columns_to_fetch = [
+                col for col in display_columns if col.name not in provided_sample_values
+            ]
+            if columns_to_fetch:
+                fetched_sample_values = self._get_sample_values(
+                    table, columns_to_fetch, sample_count
+                )
+
+        # Merge, giving precedence to explicitly provided sample values
+        column_sample_values = {**fetched_sample_values, **provided_sample_values}
 
         # Build custom CREATE TABLE statement with filtered columns
         col_defs = []
@@ -260,8 +277,20 @@ class SQLiteDatabase:
             
             # Add sample values if available
             if col.name in column_sample_values and column_sample_values[col.name]:
-                sample_values = column_sample_values[col.name]
-                examples_str = ", ".join(str(v) for v in sample_values)
+                raw_sample_values = column_sample_values[col.name]
+                display_values: List[str] = []
+                for sample in raw_sample_values:
+                    # Normalize to string and ensure string values are quoted,
+                    # unless they already appear quoted, to match _get_sample_values.
+                    if isinstance(sample, str):
+                        val_str = sample
+                        if not (val_str.startswith('"') and val_str.endswith('"')):
+                            val_str = f'"{val_str}"'
+                    else:
+                        val_str = str(sample)
+                    display_values.append(val_str)
+
+                examples_str = ", ".join(display_values)
                 comment_parts.append(f"Ví dụ: {examples_str},...")
             
             if comment_parts:
@@ -531,6 +560,7 @@ class SQLiteDatabase:
         get_col_comments: bool = False,
         allowed_col_names: Optional[List[str]] = None,
         sample_count: Optional[int] = None,
+        column_sample_values: Optional[Dict[str, List[str]]] = None,
     ) -> str:
         """Get table info without throwing exceptions."""
         try:
@@ -539,6 +569,7 @@ class SQLiteDatabase:
                 get_col_comments=get_col_comments,
                 allowed_col_names=allowed_col_names,
                 sample_count=sample_count,
+                column_sample_values=column_sample_values,
             )
         except ValueError as e:
             return f"Error: {e}"
