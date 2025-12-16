@@ -41,6 +41,7 @@ class SQLiteDatabase:
         except Exception:
             return default
 
+
     def __init__(
         self,
         engine: Engine,
