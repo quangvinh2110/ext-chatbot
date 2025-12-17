@@ -12,6 +12,10 @@ from .client import (
     get_openai_llm_model,
     get_thinking_openai_llm_model,
 )
+from .date import (
+    get_today_date_en,
+    get_today_date_vi,
+)
 
 __all__ = [
     "set_seed",
@@ -24,4 +28,6 @@ __all__ = [
     "get_infinity_embeddings",
     "get_openai_llm_model",
     "get_thinking_openai_llm_model",
+    "get_today_date_en",
+    "get_today_date_vi",
 ]

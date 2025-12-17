@@ -175,6 +175,24 @@ class SQLiteDatabase:
         return default
 
 
+    def get_column_names(self, table_name: str) -> List[str] | None:
+        """
+        Return the names of columns in a table.
+        """
+        all_table_names = list(self.get_usable_table_names())
+        if table_name not in all_table_names:
+            raise ValueError(f"Table '{table_name}' not found in database. Available tables: {all_table_names}")
+        try:
+            column_names = []
+            for col in self._inspector.get_columns(table_name):
+                col_name = col.get("name")
+                if isinstance(col_name, str):
+                    column_names.append(col_name)
+            return column_names
+        except SQLAlchemyError:
+            return None
+
+
     def get_table_info(
         self,
         table_name: str,
@@ -291,7 +309,7 @@ class SQLiteDatabase:
                     display_values.append(val_str)
 
                 examples_str = ", ".join(display_values)
-                comment_parts.append(f"Ví dụ: {examples_str},...")
+                comment_parts.append(f"Một vài giá trị trong cột \"{col.name}\": {examples_str},...")
             
             if comment_parts:
                 comment_text = " ".join(comment_parts)
@@ -661,6 +679,8 @@ class SQLiteDatabase:
             raise ValueError("FAISS indexes are not loaded for this database")
         if self._faiss_embeddings is None:
             raise ValueError("Embeddings client is not configured")
+        if not predicate_values:
+            return {}
 
         # 1. Validation and preparation
         valid_queries = []
