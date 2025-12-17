@@ -12,7 +12,7 @@ Your task:
 Output must be a valid JSON object inside a ```json code block using this format:
 ```json
 {{
-    "think": "Brief reasoning step by step",
+    "reasoning": "Reasoning of the decision",
     "is_related": "Y or N",
     "columns": ["column name 1", "column name 2"]
 }}
