@@ -20,102 +20,112 @@ def get_predicate_values(
         raise ValueError("Schema is required")
     parsed = parse_one(sql_query, read=database.dialect.lower())
     
-    # --- Step A: Resolve Aliases (c -> customers) ---
+    # ---------------------------------------------------------
+    # 1. Map Aliases AND Track Active Tables
+    # ---------------------------------------------------------
     alias_map = {}
     
-    # 1. Check FROM
+    # Helper to register tables found in FROM/JOIN
+    def register_table(table_node):
+        real_name = table_node.name
+        alias = table_node.alias if table_node.alias else real_name
+        alias_map[alias] = real_name
+
     for from_node in parsed.find_all(exp.From):
         for table in from_node.find_all(exp.Table):
-            real_name = table.name
-            alias = table.alias if table.alias else real_name
-            alias_map[alias] = real_name
+            register_table(table)
 
-    # 2. Check JOINs
     for join_node in parsed.find_all(exp.Join):
-        table = join_node.this
-        real_name = table.name
-        alias = table.alias if table.alias else real_name
-        alias_map[alias] = real_name
+        register_table(join_node.this)
 
     print(f"DEBUG: Found Aliases: {alias_map}")
 
     extracted_data = []
 
-    # --- Step B: Recursive Visitor ---
+    # ---------------------------------------------------------
+    # 2. Logic to Resolve Table for a Column
+    # ---------------------------------------------------------
+    def resolve_table(col_node):
+        col_name = col_node.name
+        table_alias = col_node.table
+        
+        # Case A: Alias is explicit (e.g., c.country)
+        if table_alias:
+            return alias_map.get(table_alias)
+        
+        # Case B: No alias (e.g., country). 
+        # FIX: Check only tables present in the current query (alias_map.values())
+        active_tables = set(alias_map.values())
+        
+        candidates = []
+        for table in active_tables:
+            # Check if table exists in schema AND column exists in that table
+            if table in schema and col_name in schema[table]:
+                candidates.append(table)
+        
+        if len(candidates) == 1:
+            return candidates[0]
+        elif len(candidates) > 1:
+            print(f"DEBUG: Ambiguous column '{col_name}' found in multiple active tables: {candidates}")
+            return None
+        else:
+            return None
+
+    # ---------------------------------------------------------
+    # 3. Recursive Visitor
+    # ---------------------------------------------------------
     def visit_node(node):
-        if not node:
+        if not node: 
             return
 
-        # 1. Handle Binary Logic (AND, OR)
-        # sqlglot stores left side in 'this' and right side in 'expression'
         if isinstance(node, (exp.And, exp.Or)):
             visit_node(node.this)
             visit_node(node.expression)
             return
 
-        # 2. Handle Wrappers (Parenthesis, NOT, WHERE)
-        # These only have one child stored in 'this'
         if isinstance(node, (exp.Paren, exp.Not, exp.Where)):
             visit_node(node.this)
             return
 
-        # 3. Handle Comparisons (Column = 'Value', !=, LIKE)
+        # Handle Binary Comparisons (=, !=, LIKE)
         if isinstance(node, (exp.EQ, exp.NEQ, exp.Like, exp.ILike)):
-            # We look for: Column op Literal
             if isinstance(node.left, exp.Column) and isinstance(node.right, exp.Literal):
                 if node.right.is_string:
                     process_extraction(node.left, node.right.this, node.key)
             return
 
-        # 4. Handle IN (Column IN ('A', 'B'))
-        if isinstance(node, exp.In):
-            if isinstance(node.this, exp.Column):
-                # The list of values is in args['expressions']
-                for item in node.args.get('expressions', []):
-                    if isinstance(item, exp.Literal) and item.is_string:
-                        process_extraction(node.this, item.this, "IN")
+        # Handle IN clause
+        if isinstance(node, exp.In) and isinstance(node.this, exp.Column):
+            for item in node.args.get('expressions', []):
+                if isinstance(item, exp.Literal) and item.is_string:
+                    process_extraction(node.this, item.this, "IN")
             return
 
-    # Helper to validate and store
     def process_extraction(col_node, value_str, operator):
         col_name = col_node.name
-        table_alias = col_node.table
-        
-        real_table_name = None
+        real_table_name = resolve_table(col_node)
 
-        # Resolve Alias
-        if table_alias:
-            real_table_name = alias_map.get(table_alias)
-        else:
-            # Try to guess table from schema if no alias provided
-            matches = [t for t, cols in schema.items() if col_name in cols]
-            if len(matches) == 1:
-                real_table_name = matches[0]
-
-        # Validation
-        if real_table_name and real_table_name in schema:
-            cols = schema[real_table_name]
-            if col_name in cols:
-                if cols[col_name] == "TEXT":
-                    extracted_data.append({
-                        "table_name": real_table_name,
-                        "column_name": col_name,
-                        "value": value_str,
-                        "operator": operator
-                    })
-                else:
-                    print(f"DEBUG: Skipped {col_name} (Not TEXT)")
+        if real_table_name:
+            # Verify data type is TEXT
+            col_type = schema[real_table_name].get(col_name)
+            if col_type == "TEXT":
+                extracted_data.append({
+                    "table_name": real_table_name,
+                    "column_name": col_name,
+                    "value": value_str,
+                    "operator": operator
+                })
             else:
-                print(f"DEBUG: Skipped {col_name} (Not in {real_table_name})")
+                print(f"DEBUG: Skipped {col_name} (Type is {col_type}, not TEXT)")
         else:
-            print(f"DEBUG: Skipped {col_name} (Unknown table/alias)")
+            print(f"DEBUG: Skipped {col_name} (Could not resolve table)")
 
-    # --- Step C: Start Traversal ---
+    # ---------------------------------------------------------
+    # 4. Execution
+    # ---------------------------------------------------------
     where_clause = parsed.find(exp.Where)
     if where_clause:
-        # Crucial Fix: Pass where_clause.this (the content) OR rely on the updated visitor handling exp.Where
         visit_node(where_clause)
-    
     state["predicate_values"] = extracted_data
     return state
 
