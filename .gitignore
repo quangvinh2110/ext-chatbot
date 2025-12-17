@@ -3,3 +3,8 @@ volumes/
 resources/
 .env
 test_api.py
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
