@@ -241,5 +241,6 @@ def restrict_select_columns(
             select_node.set("expressions", new_expressions)
 
     restricted_sql_query = parsed.sql()
-    state["sql_queries"].append(restricted_sql_query)
+    if restricted_sql_query != sql_query:
+        state["sql_queries"].append(restricted_sql_query)
     return state
