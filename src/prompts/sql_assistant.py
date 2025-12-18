@@ -22,7 +22,7 @@ Table Schema (DDL):
 {table_info}
 
 User Query:
-{query}
+{user_query}
 """.strip()
 
 
@@ -39,7 +39,7 @@ You write SQL queries for a {dialect} database. Users are querying their company
 Translate the user's request into one valid {dialect} query. SQL should be written as a markdown code block:
 For example:
 ```sql
-SELECT * FROM table WHERE condition;
+SELECT column1, column2 FROM table WHERE condition;
 ```
 
 ### GUIDELINES:
@@ -81,7 +81,7 @@ Bạn là một trợ lý phân tích dữ liệu chuyên nghiệp. Nhiệm vụ
 {table_infos}
 
 2. **Câu hỏi người dùng (User Question)**:
-{query}
+{user_query}
 
 3. **Truy vấn SQL (SQL Query)**:
 ```sql

@@ -7,22 +7,29 @@ from typing import Optional, List, Dict, Any
 from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseChatModel
 
-from .pipeline import SQLAssistantState
+from .full_pipeline import SQLAssistantState
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import SCHEMA_LINKING_TEMPLATE
 
 
-@lru_cache()
+# Cache for schema linking chains keyed by model instance ID
+_schema_linking_chain_cache: Dict[int, Runnable] = {}
 def get_schema_linking_chain(chat_model: BaseChatModel) -> Runnable:
-    return (
-        ChatPromptTemplate([("human", SCHEMA_LINKING_TEMPLATE)])
-        | chat_model
-        | JsonOutputParser()
-    )
+    # Use model instance ID as cache key (since ChatOpenAI objects aren't hashable)
+    chat_model_id = id(chat_model)
+    
+    if chat_model_id not in _schema_linking_chain_cache:
+        _schema_linking_chain_cache[chat_model_id] = (
+            ChatPromptTemplate([("human", SCHEMA_LINKING_TEMPLATE)])
+            | chat_model
+            | JsonOutputParser()
+        )
+    
+    return _schema_linking_chain_cache[chat_model_id]
 
 
 async def _link_schema_one(
-    query: str,
+    user_query: str,
     table_name: str,
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
@@ -34,7 +41,7 @@ async def _link_schema_one(
             return {
                 "input_item": {
                     "table_name": table_name,
-                    "query": query,
+                    "user_query": user_query,
                     "allowed_col_names": allowed_col_names
                 },
                 "filtered_schema": (table_name, column_names),
@@ -48,7 +55,7 @@ async def _link_schema_one(
             sample_count=3
         )
         result = await get_schema_linking_chain(chat_model).ainvoke(
-            {"table_info": table_info, "query": query, "dialect": database.dialect}
+            {"table_info": table_info, "user_query": user_query, "dialect": database.dialect}
         )
         if "is_related" not in result or result["is_related"] not in ["Y", "N"]:
             raise ValueError("Invalid response from schema linking chain")
@@ -59,7 +66,7 @@ async def _link_schema_one(
             return {
                 "input_item": {
                     "table_name": table_name,
-                    "query": query,
+                    "user_query": user_query,
                     "allowed_col_names": allowed_col_names
                 },
                 "filtered_schema": None,
@@ -67,13 +74,13 @@ async def _link_schema_one(
             }
         else:
             return {
-                "input_item": {"table_name": table_name, "query": query, "allowed_col_names": allowed_col_names},
+                "input_item": {"table_name": table_name, "user_query": user_query, "allowed_col_names": allowed_col_names},
                 "filtered_schema": (table_name, result["columns"]),
                 "error": None
             }
     except Exception as e:
         return {
-            "input_item": {"table_name": table_name, "query": query},
+            "input_item": {"table_name": table_name, "user_query": user_query},
             "filtered_schema": None,
             "error": str(e)
         }
@@ -84,9 +91,9 @@ async def link_schema(
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
 ) -> Dict[str, Dict[str, str]]:
-    query = state.get("query")
-    if not query:
-        raise ValueError("query is required")
+    user_query = state.get("user_query")
+    if not user_query:
+        raise ValueError("user_query is required")
     max_retries = state.get("max_retries", 1)
     # queue = []
     # for table in  database.get_usable_table_names():
@@ -94,15 +101,15 @@ async def link_schema(
     #         queue.append({
     #             "table_name": table,
     #             "allowed_col_names": col_group,
-    #             "query": query
+    #             "user_query": user_query
     #         })
     queue = [
-        {"table_name": table_name, "query": query} 
+        {"table_name": table_name, "user_query": user_query} 
         for table_name in database.get_usable_table_names()
     ]
     successful_results = []
     for _ in range(max_retries):
-        tasks = [_link_schema_one(chat_model=chat_model, **input_item) for input_item in queue]
+        tasks = [_link_schema_one(chat_model=chat_model, database=database, **input_item) for input_item in queue]
         results = await asyncio.gather(*tasks)
         successful_results.extend([
             res for res in results if res["error"] is None

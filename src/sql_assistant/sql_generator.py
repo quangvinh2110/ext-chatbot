@@ -1,4 +1,5 @@
 import re
+from functools import partial
 from typing import List, Dict
 
 from langchain_core.messages import SystemMessage, HumanMessage, AnyMessage
@@ -7,7 +8,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableLambda
 
-from .pipeline import SQLAssistantState
+from .full_pipeline import SQLAssistantState
 from ..prompts import SQL_GEN_TEMPLATE
 from ..utils import get_today_date_en
 from ..tools.table.sqlite_database import SQLiteDatabase
@@ -32,6 +33,9 @@ def preprocess_for_sql_query_generation(
     linked_schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
     if not linked_schema:
         raise ValueError("linked_schema not found in the input")
+    user_query = state.get("user_query")
+    if not user_query:
+        raise ValueError("user_query not found in the input")
     table_infos = "\n\n".join([
         database.get_table_info_no_throw(
             table_name,
@@ -47,26 +51,35 @@ def preprocess_for_sql_query_generation(
         date=get_today_date_en(),
         dialect=database.dialect
     ))
-    human_message = HumanMessage(content=state["query"])
+    human_message = HumanMessage(content=user_query)
     return [system_prompt, human_message]
 
 
-def get_sql_query_generation_chain(chat_model: BaseChatModel) -> Runnable:
-    return (
-        RunnableLambda(preprocess_for_sql_query_generation)
-        | chat_model
-        | StrOutputParser()
-        | parse_sql_output
-    )
+_sql_query_generation_chain_cache: Dict[tuple[int, int], Runnable] = {}
+def get_sql_query_generation_chain(
+    chat_model: BaseChatModel, database: SQLiteDatabase
+) -> Runnable:
+    chat_model_id, database_id = id(chat_model), id(database)
+
+    if (chat_model_id, database_id) not in _sql_query_generation_chain_cache:
+        _sql_query_generation_chain_cache[(chat_model_id, database_id)] = (
+            RunnableLambda(partial(preprocess_for_sql_query_generation, database=database))
+            | chat_model
+            | StrOutputParser()
+            | parse_sql_output
+        )
+    
+    return _sql_query_generation_chain_cache[(chat_model_id, database_id)]
 
 
 async def generate_sql_query(
     state: SQLAssistantState,
     chat_model: BaseChatModel,
+    database: SQLiteDatabase,
 ) -> SQLAssistantState:
     if not state.get("sql_queries"):
         state["sql_queries"] = []
-    sql_gen_chain = get_sql_query_generation_chain(chat_model)
+    sql_gen_chain = get_sql_query_generation_chain(chat_model, database)
     sql_query = await sql_gen_chain.ainvoke(state)
     state["sql_queries"].append(sql_query)
     return state
