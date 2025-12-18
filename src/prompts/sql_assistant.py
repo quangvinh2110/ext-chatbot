@@ -3,19 +3,18 @@ import json
 
 SCHEMA_LINKING_TEMPLATE = """
 You are an expert in SQL schema linking. 
-Given a {dialect} table schema (DDL) and a user query, determine if the table is relevant to the query.
+Given a {dialect} table schema (DDL) and a conversation history, determine if the table is relevant to the latest customer query.
 
 Your task:
-1. Analyze the table schema and the user query to decide if they are related.
-2. Answer "Y" (Yes) or "N" (No).
-3. If the answer is "Y", list ALL columns that are semantically related to the query topics. 
+1. Analyze the table schema and the conversation history. Focus on the latest customer message, using previous messages for context (e.g., to resolve references). Evaluate the Table Name and Table Comment to see if the general topic matches the query. Answer "Y" (Yes) or "N" (No) regarding the table's relevance to the latest query.
+2. If the answer is "Y", list ALL columns that are semantically related. 
    - You do NOT need to identify the exact columns for the final SQL query. 
-   - You SHOULD include any columns that provide context, identifiers, or potential join keys related to the entities in the query.
+   - You MUST include all columns that provide context, identifiers, or potential join keys related to the entities in the query.
 
 Output must be a valid JSON object inside a ```json code block using this format:
 ```json
 {{
-    "reasoning": "Reasoning of the decision",
+    "explanation": "Explanation of the decision",
     "is_related": "Y or N",
     "columns": ["column name 1", "column name 2"]
 }}
@@ -24,8 +23,8 @@ Output must be a valid JSON object inside a ```json code block using this format
 Table Schema (DDL):
 {table_info}
 
-User Query:
-{user_query}
+Conversation History:
+{formatted_conversation}
 """.strip()
 
 
@@ -34,12 +33,13 @@ SQL_GEN_TEMPLATE = """
 Today is {date}
 
 ### INSTRUCTIONS:
-You write SQL queries for a {dialect} database. Users are querying their company database, and your task is to assist by generating valid SQL queries strictly adhering to the database schema provided.
+You write SQL queries for a {dialect} database. The Support Team is querying the database to answer Customer questions, and your task is to assist by generating valid SQL queries strictly adhering to the database schema provided.
 
 **Table Schema**:
 {table_infos}
 
-Translate the user's request into one valid {dialect} query. SQL should be written as a markdown code block:
+
+Translate the latest customer message into one valid {dialect} query, using the conversation history for context (e.g., resolving pronouns or follow-up filters). SQL should be written as a markdown code block:
 For example:
 ```sql
 SELECT column1, column2 FROM table WHERE condition;
@@ -56,7 +56,7 @@ SELECT column1, column2 FROM table WHERE condition;
 
 3.  **Conditions**:
     *   Always include default conditions for filtering invalid data, e.g., `deleted_at IS NULL` and `status != 'cancelled'` if relevant.
-    *   Ensure these conditions match the query's intent unless explicitly omitted in the user request.
+    *   Ensure these conditions match the query's intent unless explicitly omitted in the customer's request.
 
 4.  **Output Consistency**:
     *   The output fields must match the query's intent exactly. Do not add extra columns or omit requested fields.
@@ -64,11 +64,14 @@ SELECT column1, column2 FROM table WHERE condition;
 5.  **Reserved Keywords and Case Sensitivity**:
     *   Escape reserved keywords or case-sensitive identifiers using double quotes (" "), e.g., "order".
 
-If the user's question is ambiguous or unclear, you must make your best reasonable guess based on the schema.
-Translate the user's intent into a **single valid {dialect} query** based on the schema provided.
+If the customer's question is ambiguous or unclear, you must make your best reasonable guess based on the schema.
+Translate the customer's intent into a **single valid {dialect} query** based on the schema provided.
 Ensure the query is optimized, precise, and error-free.
 
 **You must ONLY output ONE SINGLE valid SQL query as markdown codeblock.**
+
+### CONVERSATION HISTORY:
+{formatted_conversation}
 """.strip()
 
 
@@ -79,20 +82,8 @@ Hôm nay là {date}
 ### NHIỆM VỤ:
 Bạn là một trợ lý phân tích dữ liệu chuyên nghiệp. Nhiệm vụ của bạn là đưa ra câu trả lời bằng **Tiếng Việt** rõ ràng, chính xác và súc tích cho câu hỏi của người dùng, dựa hoàn toàn vào kết quả cơ sở dữ liệu (database results) được cung cấp.
 
-**Dữ liệu đầu vào**:
-1. **Lược đồ bảng (Table Schema)**:
+**Lược đồ bảng (Table Schema)**:
 {table_infos}
-
-2. **Câu hỏi người dùng (User Question)**:
-{user_query}
-
-3. **Truy vấn SQL (SQL Query)**:
-```sql
-{sql_query}
-```
-
-4. **Kết quả từ Database (Database Results)**:
-{db_result}
 
 ### CÁC NGUYÊN TẮC HƯỚNG DẪN:
 

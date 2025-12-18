@@ -17,9 +17,9 @@ from ..tools.table.sqlite_database import SQLiteDatabase
 _sql_markdown_re = re.compile(r"```sql\s*([\s\S]*?)\s*```", re.DOTALL)
 def parse_sql_output(msg_content: str) -> str:
     try:
-        match = _sql_markdown_re.search(msg_content)
+        match = _sql_markdown_re.findall(msg_content)
         if match:
-            return match.group(1).strip()
+            return match[-1].strip()
         else:
             raise ValueError("No SQL query found in the content")
     except Exception:

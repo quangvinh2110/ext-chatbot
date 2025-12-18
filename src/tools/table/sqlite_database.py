@@ -309,7 +309,7 @@ class SQLiteDatabase:
                     display_values.append(val_str)
 
                 examples_str = ", ".join(display_values)
-                comment_parts.append(f"Một vài giá trị trong cột \"{col.name}\": {examples_str},...")
+                comment_parts.append(f"Một vài (không phải tất cả) giá trị trong cột \"{col.name}\": {examples_str},...")
             
             if comment_parts:
                 comment_text = " ".join(comment_parts)
