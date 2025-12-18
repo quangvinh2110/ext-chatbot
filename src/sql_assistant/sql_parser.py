@@ -243,7 +243,7 @@ def restrict_select_columns(
 
     restricted_sql_query = parsed.sql(dialect=database.dialect.lower())
     def normalize_sql_query(sql_query: str) -> str:
-        return re.sub(r"\s+", " ", sql_query).strip().lower()
+        return re.sub(r"\s+", " ", sql_query).strip().strip(";").lower()
     if normalize_sql_query(restricted_sql_query) != normalize_sql_query(sql_query):
         state["sql_queries"].append(restricted_sql_query)
     return state

@@ -76,7 +76,7 @@ async def _link_schema_one(
             "formatted_conversation": format_conversation(conversation), 
             "dialect": database.dialect
         })
-        # print(result["explanation"])
+        
         if "is_related" not in result or result["is_related"] not in ["Y", "N"]:
             raise ValueError("Invalid response from schema linking chain")
         if result["is_related"] == "Y" and not result.get("columns"):
@@ -106,7 +106,7 @@ async def _link_schema_one(
         return {
             "input_item": {
                 "table_name": table_name, 
-                "conversation": conversation,
+                "conversation": conversation, 
                 "allowed_col_names": allowed_col_names
             },
             "filtered_schema": None,

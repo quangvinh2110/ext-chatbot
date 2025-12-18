@@ -10,6 +10,7 @@ from .sql_assistant import (
     SQL_GEN_TEMPLATE,
     SCHEMA_LINKING_TEMPLATE,
     ANSWER_GEN_TEMPLATE,
+    QUERY_DATABASE_TOOL,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "SQL_GEN_TEMPLATE",
     "SCHEMA_LINKING_TEMPLATE",
     "ANSWER_GEN_TEMPLATE",
+    "QUERY_DATABASE_TOOL",
 ]

@@ -2,7 +2,7 @@ import re
 from functools import partial
 from typing import List, Dict
 
-from langchain_core.messages import SystemMessage, HumanMessage, AnyMessage
+from langchain_core.messages import HumanMessage, AnyMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseChatModel
@@ -26,6 +26,23 @@ def parse_sql_output(msg_content: str) -> str:
         return msg_content
 
 
+def format_conversation(conversation: List[AnyMessage]) -> str:
+    formatted_conversation = ""
+    end_index = len(conversation) - 1 
+    for ind in range(len(conversation) - 1, -1, -1):
+        if conversation[ind].type == "human":
+            end_index = ind
+            break
+    for message in conversation[:end_index]:
+        if message.type == "human":
+            formatted_conversation += f"Customer: {message.content}\n"
+        elif message.type == "ai":
+            formatted_conversation += f"Support Team: {message.content}\n"
+    
+    formatted_conversation += f"\nLatest Customer Message: {conversation[end_index].content}"
+    return formatted_conversation
+
+
 def preprocess_for_sql_query_generation(
     state: SQLAssistantState,
     database: SQLiteDatabase,
@@ -33,9 +50,10 @@ def preprocess_for_sql_query_generation(
     linked_schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
     if not linked_schema:
         raise ValueError("linked_schema not found in the input")
-    user_query = state.get("user_query")
-    if not user_query:
-        raise ValueError("user_query not found in the input")
+    conversation = state.get("conversation")
+    if not conversation:
+        raise ValueError("conversation not found in the input")
+    formatted_conversation = format_conversation(conversation)
     table_infos = "\n\n".join([
         database.get_table_info_no_throw(
             table_name,
@@ -46,13 +64,12 @@ def preprocess_for_sql_query_generation(
         )
         for table_name, col_types in linked_schema.items()
     ])
-    system_prompt = SystemMessage(SQL_GEN_TEMPLATE.format(
-        table_infos=table_infos,
+    return [HumanMessage(SQL_GEN_TEMPLATE.format(
         date=get_today_date_en(),
-        dialect=database.dialect
-    ))
-    human_message = HumanMessage(content=user_query)
-    return [system_prompt, human_message]
+        dialect=database.dialect,
+        table_infos=table_infos,
+        formatted_conversation=formatted_conversation,
+    ))]
 
 
 _sql_query_generation_chain_cache: Dict[tuple[int, int], Runnable] = {}

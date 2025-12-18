@@ -1,6 +1,10 @@
+import json
+from pydantic import BaseModel, Field
 from functools import partial
 from typing import List, Dict, Any
-from langchain_core.messages import HumanMessage, AnyMessage
+
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage, AnyMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.language_models import BaseChatModel
@@ -8,17 +12,27 @@ from langchain_core.language_models import BaseChatModel
 from .full_pipeline import SQLAssistantState
 from ..utils import get_today_date_vi
 from ..tools.table.sqlite_database import SQLiteDatabase
-from ..prompts import ANSWER_GEN_TEMPLATE
+from ..prompts import ANSWER_GEN_TEMPLATE, QUERY_DATABASE_TOOL
 
+
+
+class QueryDatabaseInput(BaseModel):
+    sql_query: str = Field(description="Câu truy vấn SQLite")
+
+
+@tool("query_database", args_schema=QueryDatabaseInput)
+def query_database(sql_query: str) -> str:
+    """Thực hiện câu truy vấn SQLite và trả về kết quả"""
+    return ""
 
 
 def preprocess_for_answer_generation(
     state: SQLAssistantState,
     database: SQLiteDatabase,
 ) -> List[AnyMessage]:
-    user_query = state.get("user_query")
-    if not user_query:
-        raise ValueError("user_query not found in the input")
+    conversation = state.get("conversation")
+    if not conversation:
+        raise ValueError("conversation not found in the input")
     linked_schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
     if not linked_schema:
         raise ValueError("linked_schema not found in the input")
@@ -41,25 +55,29 @@ def preprocess_for_answer_generation(
         )
         for table_name, col_types in linked_schema.items()
     ])
-    
-    human_message = HumanMessage(content=ANSWER_GEN_TEMPLATE.format(
+    tool_call = {
+        "name": "query_database",
+        "arguments": {"sql_query": sql_query}
+    }
+    system_message = SystemMessage(content=ANSWER_GEN_TEMPLATE.format(
         date=get_today_date_vi(),
         table_infos=table_infos,
-        user_query=user_query,
-        sql_query=sql_query,
-        db_result=db_result
     ))
-    return [human_message]
+    
+    sql_conversation = [system_message] + conversation
+    sql_conversation.append(AIMessage('<tool_call>\n' + json.dumps(tool_call, ensure_ascii=False) + '\n</tool_call>'))
+    sql_conversation.append(HumanMessage(content=str(db_result)))
+    return sql_conversation
 
 
 _answer_generation_chain_cache: Dict[tuple[int, int], Runnable] = {}
 def get_answer_generation_chain(chat_model: BaseChatModel, database: SQLiteDatabase) -> Runnable:
     chat_model_id, database_id = id(chat_model), id(database)
-
+    openai_tool_schema = QUERY_DATABASE_TOOL.replace("{{dialect}}", database.dialect)
     if (chat_model_id, database_id) not in _answer_generation_chain_cache:
         _answer_generation_chain_cache[(chat_model_id, database_id)] = (
             RunnableLambda(partial(preprocess_for_answer_generation, database=database))
-            | chat_model
+            | chat_model.bind(tools=[openai_tool_schema])
             | StrOutputParser()
         )
     
