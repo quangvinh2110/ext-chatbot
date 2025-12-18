@@ -8,3 +8,5 @@ test_api.py
 __pycache__/
 *.py[cod]
 *$py.class
+
+*.png

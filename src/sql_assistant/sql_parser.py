@@ -1,3 +1,4 @@
+import re
 from sqlglot import exp, parse_one
 from typing import List, Dict
 
@@ -240,7 +241,9 @@ def restrict_select_columns(
         if new_expressions:
             select_node.set("expressions", new_expressions)
 
-    restricted_sql_query = parsed.sql()
-    if restricted_sql_query != sql_query:
+    restricted_sql_query = parsed.sql(dialect=database.dialect.lower())
+    def normalize_sql_query(sql_query: str) -> str:
+        return re.sub(r"\s+", " ", sql_query).strip().lower()
+    if normalize_sql_query(restricted_sql_query) != normalize_sql_query(sql_query):
         state["sql_queries"].append(restricted_sql_query)
     return state
