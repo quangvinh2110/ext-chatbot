@@ -1,3 +1,6 @@
+import json
+
+
 SCHEMA_LINKING_TEMPLATE = """
 You are an expert in SQL schema linking. 
 Given a {dialect} table schema (DDL) and a user query, determine if the table is relevant to the query.
@@ -119,3 +122,22 @@ Bạn là một trợ lý phân tích dữ liệu chuyên nghiệp. Nhiệm vụ
 **Đầu ra**:
 Chỉ xuất ra câu trả lời cuối cùng bằng Tiếng Việt (sử dụng Markdown).
 """.strip()
+
+
+QUERY_DATABASE_TOOL = json.dumps({
+    'type': 'function',
+    'function': {
+        'name': 'query_database',
+        'description': 'Thực hiện câu truy vấn {{dialect}} và trả về kết quả',
+        'parameters': {
+            'properties': {
+                'sql_query': {
+                    'description': 'Câu truy vấn {{dialect}}',
+                    'type': 'string'
+                }
+            },
+            'required': ['sql_query'],
+            'type': 'object'
+        }
+    }
+})
