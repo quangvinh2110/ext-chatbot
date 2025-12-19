@@ -7,7 +7,7 @@ from langchain_core.messages import AnyMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-from .full_pipeline import SQLAssistantState
+from .state import SQLAssistantState
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import SCHEMA_LINKING_TEMPLATE
 
@@ -40,7 +40,8 @@ def format_conversation(conversation: List[AnyMessage]) -> str:
             formatted_conversation += f"Customer: {message.content}\n"
         elif message.type == "ai":
             formatted_conversation += f"Support Team: {message.content}\n"
-    
+    if not formatted_conversation:
+        formatted_conversation = "No conversation history\n"
     formatted_conversation += f"\nLatest Customer Message: {conversation[end_index].content}"
     return formatted_conversation
 

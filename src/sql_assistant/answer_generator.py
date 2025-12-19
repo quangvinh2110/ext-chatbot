@@ -9,7 +9,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.language_models import BaseChatModel
 
-from .full_pipeline import SQLAssistantState
+from .state import SQLAssistantState
 from ..utils import get_today_date_vi
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import ANSWER_GEN_TEMPLATE, QUERY_DATABASE_TOOL

@@ -2,7 +2,7 @@ import re
 from sqlglot import exp, parse_one
 from typing import List, Dict
 
-from .full_pipeline import SQLAssistantState
+from .state import SQLAssistantState
 from ..tools.table.sqlite_database import SQLiteDatabase
 
 

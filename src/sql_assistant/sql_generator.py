@@ -8,7 +8,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableLambda
 
-from .full_pipeline import SQLAssistantState
+from .state import SQLAssistantState
 from ..prompts import SQL_GEN_TEMPLATE
 from ..utils import get_today_date_en
 from ..tools.table.sqlite_database import SQLiteDatabase
@@ -38,7 +38,8 @@ def format_conversation(conversation: List[AnyMessage]) -> str:
             formatted_conversation += f"Customer: {message.content}\n"
         elif message.type == "ai":
             formatted_conversation += f"Support Team: {message.content}\n"
-    
+    if not formatted_conversation:
+        formatted_conversation = "No conversation history\n"
     formatted_conversation += f"\nLatest Customer Message: {conversation[end_index].content}"
     return formatted_conversation
 

@@ -16,16 +16,7 @@ from .sql_parser import (
     restrict_select_columns
 )
 from .answer_generator import generate_answer
-
-
-class SQLAssistantState(TypedDict):
-    conversation: List[AnyMessage]
-    linked_schema: Dict[str, Dict[str, str]]
-    sql_queries: List[str]
-    predicate_values: List[Dict[str, Any]]
-    tbl_col_sample_values: Dict[str, Dict[str, List[Any]]]
-    db_output: Dict[str, Any]
-    final_answer: Optional[str]
+from .state import SQLAssistantState
 
 
 def retry_condition(
