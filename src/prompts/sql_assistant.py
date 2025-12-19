@@ -1,6 +1,29 @@
 import json
 
 
+MESSAGE_REWRITING_TEMPLATE = """
+### Role
+You are an expert Query Reformulator. Your task is to take a conversation between a "Customer" and a "Support Team" and rewrite the Customer's LATEST message into a single, standalone, and self-contained Vietnamese query.
+
+### Objective
+The rewritten query will be sent to a Text-to-SQL engine. It must contain all the necessary constraints, entities, and filters mentioned earlier in the conversation, while removing conversational filler.
+
+### Rules
+1. **Self-Containment**: The output must be understandable without looking at the history.
+2. **Resolve Pronouns**: Replace words like "them", "it", "those", or "their" with the actual entities mentioned previously.
+3. **Handle Refinements**: If the user adds a filter (e.g., "only the ones in New York"), combine it with the previous subject (e.g., "List all customers in New York").
+4. **No Redundancy**: Do not include conversational fluff like "Thanks," "That's helpful," or "Can you tell me..."
+5. **Detect Topic Shifts**: If the user asks a question that is completely unrelated to the previous context, do not include old information.
+6. **Stay Brief**: Change the customer message as less as possible. Only add the minimum amount of context required to resolve context.
+7. **Output Format**: Output ONLY the rewritten text. Do not provide explanations or labels.
+
+### Conversation:
+{formatted_conversation}
+
+### Rewritten Query:
+""".strip()
+
+
 SCHEMA_LINKING_TEMPLATE = """
 You are an expert in SQL schema linking. 
 Given a {dialect} table schema (DDL) and a conversation history, determine if the table is relevant to the latest customer query.

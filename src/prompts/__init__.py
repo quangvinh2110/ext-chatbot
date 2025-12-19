@@ -7,6 +7,7 @@ from .process_table import (
 )
 
 from .sql_assistant import (
+    MESSAGE_REWRITING_TEMPLATE,
     SQL_GEN_TEMPLATE,
     SCHEMA_LINKING_TEMPLATE,
     ANSWER_GEN_TEMPLATE,
@@ -23,4 +24,5 @@ __all__ = [
     "SCHEMA_LINKING_TEMPLATE",
     "ANSWER_GEN_TEMPLATE",
     "QUERY_DATABASE_TOOL",
+    "MESSAGE_REWRITING_TEMPLATE",
 ]
