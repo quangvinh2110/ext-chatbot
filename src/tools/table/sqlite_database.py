@@ -272,6 +272,10 @@ class SQLiteDatabase:
                 fetched_sample_values = self._get_sample_values(
                     table, columns_to_fetch, sample_count
                 )
+            provided_sample_values = {
+                col_name: values[:sample_count]
+                for col_name, values in provided_sample_values.items()
+            }
 
         # Merge, giving precedence to explicitly provided sample values
         column_sample_values = {**fetched_sample_values, **provided_sample_values}
