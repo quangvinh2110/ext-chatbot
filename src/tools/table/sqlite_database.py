@@ -658,13 +658,13 @@ class SQLiteDatabase:
                     continue
 
 
-    async def batch_search_similar_values(
+    async def batch_search_similar_predicate_values(
         self,
         predicate_values: List[Tuple[str, str, str]],
         k: int = 5,
     ) -> Dict[str, Dict[str, List[str]]]:
         """
-        Asynchronously search for similar values for a batch of predicate values.
+        Asynchronously search for similar predicate values for a batch of predicate values.
         
         Args:
             predicate_values: List of (table_name, column_name, value) tuples.
@@ -728,6 +728,114 @@ class SQLiteDatabase:
         # 4. Map results back to table/column buckets (drop scores)
         for original_idx, res in zip(valid_indices, search_results):
             table_name, column_name, _ = predicate_values[original_idx]
+            value_list = [
+                str(r["value"])
+                for r in res
+                if isinstance(r, dict) and "value" in r and r["value"] is not None
+            ]
+            results[table_name][column_name].extend(value_list)
+
+        return results
+
+
+    async def search_similar_values_from_message(
+        self,
+        user_message: str,
+        linked_schema: Optional[Dict[str, Dict[str, str]]] = None,
+        k: int = 5,
+    ) -> Dict[str, Dict[str, List[str]]]:
+        """
+        Search for similar values across text columns using a user message.
+        
+        Embeds the user message once and searches for top k similar values in each
+        text column that has a FAISS index.
+        
+        Args:
+            user_message: The user's message to search for similar values.
+            linked_schema: Optional dictionary mapping table_name -> column_name -> column_datatype.
+                           If None, the schema is automatically constructed from all usable tables.
+                           Only columns with text datatypes (containing "TEXT") will be searched.
+            k: Number of nearest neighbors to retrieve per column.
+
+        Returns:
+            Mapping of table_name -> column_name -> list of similar values (no scores).
+            Only includes columns that have text datatypes and FAISS indexes.
+        """
+        if not self._faiss_indexes:
+            raise ValueError("FAISS indexes are not loaded for this database")
+        if self._faiss_embeddings is None:
+            raise ValueError("Embeddings client is not configured")
+        if not user_message:
+            return {}
+
+        # If no schema is provided, build it from all usable tables in the database
+        if linked_schema is None:
+            linked_schema = {}
+            for table_name in self.get_usable_table_names():
+                try:
+                    column_names = self.get_column_names(table_name) or []
+                except ValueError:
+                    # Skip tables that cannot be introspected
+                    continue
+
+                table_schema: Dict[str, str] = {}
+                for column_name in column_names:
+                    datatype = self.get_column_datatype(
+                        table_name, column_name, default="TEXT"
+                    )
+                    table_schema[column_name] = datatype
+
+                if table_schema:
+                    linked_schema[table_name] = table_schema
+
+        # If schema (either provided or auto-built) is empty, nothing to search
+        if not linked_schema:
+            return {}
+
+        # 1. Filter columns to only text datatypes and check for FAISS indexes
+        valid_queries: List[Tuple[str, str]] = []  # (table_name, column_name)
+        
+        # Initialize results mapping table -> column -> list of values
+        results: Dict[str, Dict[str, List[str]]] = {}
+        
+        for table_name, columns in linked_schema.items():
+            for column_name, datatype in columns.items():
+                # Check if datatype is text (case-insensitive check for "TEXT")
+                if "TEXT" not in str(datatype).upper():
+                    continue
+                
+                # Check if FAISS index exists for this column
+                table_indexes = self._faiss_indexes.get(table_name)
+                if table_indexes and column_name in table_indexes:
+                    valid_queries.append((table_name, column_name))
+                    results.setdefault(table_name, {}).setdefault(column_name, [])
+
+        if not valid_queries:
+            return results
+
+        # 2. Embed the user message once (I/O Bound)
+        embedding = await self._get_batch_embeddings([user_message])
+        # Extract single embedding from batch result
+        message_embedding = embedding[0]
+
+        # 3. Parallel FAISS Search for all valid columns (CPU Bound, offloaded to threads)
+        tasks = []
+        for table_name, column_name in valid_queries:
+            index_data = self._faiss_indexes[table_name][column_name]
+            
+            task = self._execute_search_with_semaphore(
+                semaphore=self._semaphore,
+                index_data=index_data,
+                vector=message_embedding,
+                k=k
+            )
+            tasks.append(task)
+
+        # Wait for all search tasks to complete
+        search_results = await asyncio.gather(*tasks)
+
+        # 4. Map results back to table/column buckets (drop scores)
+        for (table_name, column_name), res in zip(valid_queries, search_results):
             value_list = [
                 str(r["value"])
                 for r in res

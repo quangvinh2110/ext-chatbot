@@ -139,7 +139,7 @@ async def get_similar_predicate_values(
     if not predicate_values:
         state["tbl_col_sample_values"] = {}
         return state
-    state["tbl_col_sample_values"] = await database.batch_search_similar_values(
+    state["tbl_col_sample_values"] = await database.batch_search_similar_predicate_values(
         [
             (v["table_name"], v["column_name"], v["value"])
             for v in predicate_values
