@@ -142,6 +142,52 @@ class SQLiteDatabase:
         return sorted(base)
 
 
+    def get_table_overview(self) -> List[Dict[str, Optional[str]]]:
+        """
+        Return high-level metadata for all tables/documents based on the EAV metadata table.
+
+        Returns:
+            List of dicts like:
+            {
+                "name": "<table/document name>",
+                "data_source": "<sql|vector|...> or None",
+                "summary": "<summary text> or None",
+            }
+        """
+        # If the metadata table does not exist, just return an empty list
+        with self._engine.connect() as conn:
+            inspector = self._inspector
+            all_tables = {t.lower() for t in inspector.get_table_names()}
+            if "tables_metadata" not in all_tables:
+                return []
+
+            # Read all rows for attributes we care about
+            result = conn.execute(
+                text(
+                    """
+                    SELECT entity, attribute, value
+                    FROM "tables_metadata"
+                    WHERE attribute IN ('summary', 'data_source')
+                    """
+                )
+            )
+
+            by_entity: Dict[str, Dict[str, Optional[str]]] = {}
+            for entity, attribute, value in result:
+                if entity not in by_entity:
+                    by_entity[entity] = {
+                        "name": entity,
+                        "data_source": None,
+                        "summary": None,
+                    }
+                if attribute == "summary":
+                    by_entity[entity]["summary"] = value
+                elif attribute == "data_source":
+                    by_entity[entity]["data_source"] = value
+
+        return list(by_entity.values())
+
+
     def get_column_datatype(
         self,
         table_name: str,

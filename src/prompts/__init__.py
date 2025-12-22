@@ -13,6 +13,7 @@ from .sql_assistant import (
     ANSWER_GEN_TEMPLATE,
     QUERY_DATABASE_TOOL,
 )
+from .router import ROUTING_TEMPLATE
 
 __all__ = [
     "TRANSFORM_DATA_TEMPLATE",
@@ -25,4 +26,5 @@ __all__ = [
     "ANSWER_GEN_TEMPLATE",
     "QUERY_DATABASE_TOOL",
     "MESSAGE_REWRITING_TEMPLATE",
+    "ROUTING_TEMPLATE",
 ]

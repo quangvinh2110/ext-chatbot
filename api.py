@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AnyMessage
 from sqlalchemy import create_engine
 
-from src.sql_assistant.full_pipeline import build_sql_assistant_without_answer_generation
+from src.sql_assistant_v0.full_pipeline import build_sql_assistant_without_answer_generation
 from src.tools.table.sqlite_database import SQLiteDatabase
 from src.utils.client import (
     get_openai_llm_model,
