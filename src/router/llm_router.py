@@ -39,7 +39,7 @@ def get_router_chain(chat_model: BaseChatModel) -> Runnable:
     return _router_chain_cache[chat_model_id]
 
 
-async def route(
+async def route_conversation(
     conversation: List[AnyMessage],
     chat_model: BaseChatModel,
     database: SQLiteDatabase,

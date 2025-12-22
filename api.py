@@ -17,17 +17,28 @@ from src.utils.client import (
     get_openai_llm_model,
     get_infinity_embeddings,
 )
+from src.router.llm_router import route_conversation
 
 # Load environment variables
 load_dotenv()
 
-# Global variables for pipeline and database
+# Global variables for pipeline, database, and chat model
 sql_assistant_pipeline = None
 database = None
+chat_model = None
 
 
 class SQLSearchRequest(BaseModel):
     """Request model for SQL search query"""
+    current_message: str = Field(..., description="Current user message to process")
+    conversation_history: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Optional conversation history in format [{'role': 'user'|'assistant', 'content': '...'}]"
+    )
+
+
+class RouteRequest(BaseModel):
+    """Request model for routing conversation to a data source"""
     current_message: str = Field(..., description="Current user message to process")
     conversation_history: Optional[List[Dict[str, str]]] = Field(
         default=None,
@@ -46,6 +57,11 @@ class SQLSearchResponse(BaseModel):
         None, 
         description="Sample values for table columns"
     )
+
+
+class RouteResponse(BaseModel):
+    """Response model for routing decision"""
+    data_source: str = Field(..., description="Chosen data source e.g. sql or vector or none")
 
 
 class HealthResponse(BaseModel):
@@ -75,7 +91,7 @@ def initialize_pipeline(
         embed_model: Embedding model name
         embed_base_url: Embedding API base URL
     """
-    global sql_assistant_pipeline, database
+    global sql_assistant_pipeline, database, chat_model
     
     # Initialize embeddings
     embeddings = get_infinity_embeddings(
@@ -216,7 +232,7 @@ app = FastAPI(
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
-    if sql_assistant_pipeline is None or database is None:
+    if sql_assistant_pipeline is None or database is None or chat_model is None:
         raise HTTPException(status_code=503, detail="Pipeline not initialized")
     
     return HealthResponse(
@@ -284,6 +300,36 @@ async def sql_search(request: SQLSearchRequest):
             tbl_col_sample_values=final_state.get("tbl_col_sample_values"),
         )
         
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post("/route", response_model=RouteResponse)
+async def route_api(request: RouteRequest):
+    """
+    Route a conversation to the appropriate data source.
+    """
+    if chat_model is None or database is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Pipeline not initialized. Please check server logs."
+        )
+    try:
+        conversation = convert_to_conversation(
+            current_message=request.current_message,
+            conversation_history=request.conversation_history
+        )
+        data_source = await route_conversation(
+            conversation=conversation,
+            chat_model=chat_model,
+            database=database
+        )
+        return RouteResponse(data_source=data_source)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
