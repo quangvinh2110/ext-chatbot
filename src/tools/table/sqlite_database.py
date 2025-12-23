@@ -138,7 +138,7 @@ class SQLiteDatabase:
             base = self._all_tables - self._ignore_tables
 
         # filter out metadata tables (companion EAV tables)
-        base = {tbl for tbl in base if not tbl.endswith("__metadata")}
+        base = {tbl for tbl in base if not tbl.endswith("__metadata") and tbl != "tables_metadata"}
         return sorted(base)
 
 

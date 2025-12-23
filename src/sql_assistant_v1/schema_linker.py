@@ -3,7 +3,7 @@ import asyncio
 
 from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
@@ -108,9 +108,12 @@ async def link_schema(
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
 ) -> Dict[str, Dict[str, str]]:
-    conversation = state.get("conversation")
-    if not conversation:
-        raise ValueError("conversation is required")
+    if state.get("rewritten_message"):
+        conversation = [HumanMessage(content=state.get("rewritten_message"))]
+    elif state.get("conversation"):
+        conversation = state.get("conversation")
+    else:
+        raise ValueError("conversation or rewritten_message is required in the input")
     sample_values = state.get("sample_values", {})
     max_retries = 1
     # queue = []

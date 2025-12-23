@@ -12,7 +12,7 @@ The rewritten query will be sent to a Text-to-SQL engine. It must contain all th
 1. **Self-Containment**: The output must be understandable without looking at the history.
 2. **Resolve Pronouns**: Replace words like "them", "it", "those", or "their" with the actual entities mentioned previously.
 3. **Handle Refinements**: If the user adds a filter (e.g., "only the ones in New York"), combine it with the previous subject (e.g., "List all customers in New York").
-4. **No Redundancy**: Do not include conversational fluff like "Thanks," "That's helpful," or "Can you tell me..."
+4. **No Redundancy**: Do not include conversational fluff like "Thanks", "That's helpful", or "Can you tell me..."
 5. **Detect Topic Shifts**: If the user asks a question that is completely unrelated to the previous context, do not include old information.
 6. **Stay Brief**: Change the customer message as less as possible. Only add the minimum amount of context required to resolve context.
 7. **Output Format**: Output ONLY the rewritten text. Do not provide explanations or labels.

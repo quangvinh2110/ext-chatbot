@@ -10,8 +10,10 @@ from pydantic import BaseModel, Field, SecretStr
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AnyMessage
 from sqlalchemy import create_engine
+from langfuse import get_client
+from langfuse.langchain import CallbackHandler
 
-from src.sql_assistant_v0.full_pipeline import build_sql_assistant_without_answer_generation
+from src.sql_assistant_v1.full_pipeline import build_sql_assistant_without_answer_generation
 from src.tools.table.sqlite_database import SQLiteDatabase
 from src.utils.client import (
     get_openai_llm_model,
@@ -26,6 +28,7 @@ load_dotenv()
 sql_assistant_pipeline = None
 database = None
 chat_model = None
+langfuse = None
 
 
 class SQLSearchRequest(BaseModel):
@@ -49,7 +52,7 @@ class RouteRequest(BaseModel):
 class SQLSearchResponse(BaseModel):
     """Response model for SQL search query"""
     sql_query: str = Field(..., description="Generated SQL query")
-    db_output: Dict[str, Any] = Field(..., description="Database query results")
+    db_output: List[Dict[str, Any]] = Field(..., description="Database query results")
     linked_schema: Dict[str, Dict[str, str]] = Field(..., description="Linked schema information")
     ddl_schema: str = Field(..., description="Linked schema information in string format")
     predicate_values: Optional[List[Dict[str, Any]]] = Field(None, description="Extracted predicate values")
@@ -157,7 +160,7 @@ def convert_to_conversation(
     # Add current message
     messages.append(HumanMessage(content=current_message))
     
-    return messages
+    return messages[-20:]
 
 
 @asynccontextmanager
@@ -201,6 +204,16 @@ async def lifespan(app: FastAPI):
     print(f"FAISS Directory: {faiss_dir}")
     print(f"LLM Model: {llm_model}")
     print(f"Embedding Model: {embed_model}")
+    
+    # Initialize Langfuse client
+    global langfuse
+    langfuse = get_client()
+    
+    # Verify Langfuse connection
+    if langfuse.auth_check():
+        print("Langfuse client is authenticated and ready!")
+    else:
+        print("Warning: Langfuse authentication failed. Please check your credentials and host.")
     
     initialize_pipeline(
         db_path=db_path,
@@ -272,12 +285,18 @@ async def sql_search(request: SQLSearchRequest):
             "sql_queries": [],
             "predicate_values": [],
             "tbl_col_sample_values": {},
-            "db_output": {},
+            "db_output": [],
             "final_answer": None,
         }
         
-        # Run pipeline
-        final_state = await sql_assistant_pipeline.ainvoke(initial_state)
+        # Initialize Langfuse CallbackHandler for tracing
+        langfuse_handler = CallbackHandler()
+        
+        # Run pipeline with Langfuse tracing
+        final_state = await sql_assistant_pipeline.ainvoke(
+            initial_state,
+            config={"callbacks": [langfuse_handler]}
+        )
         linked_schema = final_state.get("linked_schema", {})
         ddl_schema = "\n\n".join([
             database.get_table_info_no_throw(
@@ -293,7 +312,7 @@ async def sql_search(request: SQLSearchRequest):
         # Extract results
         return SQLSearchResponse(
             sql_query=sql_queries[-1] if sql_queries else "",
-            db_output=final_state.get("db_output", {}),
+            db_output=final_state.get("db_output", {}).get("result", [])[:5],
             linked_schema=final_state.get("linked_schema", {}),
             ddl_schema=ddl_schema,
             predicate_values=final_state.get("predicate_values"),

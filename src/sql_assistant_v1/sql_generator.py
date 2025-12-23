@@ -20,9 +20,12 @@ def preprocess_for_sql_query_generation(
     linked_schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
     if not linked_schema:
         raise ValueError("linked_schema not found in the input")
-    conversation = state.get("conversation")
-    if not conversation:
-        raise ValueError("conversation not found in the input")
+    if state.get("rewritten_message"):
+        conversation = [HumanMessage(content=state.get("rewritten_message"))]
+    elif state.get("conversation"):
+        conversation = state.get("conversation")
+    else:
+        raise ValueError("conversation or rewritten_message is required")
     formatted_conversation = format_conversation(conversation)
     table_infos = "\n\n".join([
         database.get_table_info_no_throw(
