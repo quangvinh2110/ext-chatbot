@@ -1,5 +1,5 @@
 None of PyTorch, TensorFlow >= 2.0, or Flax have been found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
-INFO:     Started server process [76760]
+INFO:     Started server process [81300]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8321 (Press CTRL+C to quit)
@@ -10,7 +10,7 @@ LLM Model: Qwen3-8B
 Embedding Model: embed-ver01
 Langfuse client is authenticated and ready!
 SQL Search Pipeline initialized successfully!
-The latest customer query is asking about properties that are similar to a specific project but have a better price. The table 'BĐS Cho thuê 500' contains information about rental properties, including the 'Dự án' (Project) column and 'Giá thuê (triệu/tháng)' (Rental Price in million VND per month). These columns are directly relevant to the query as they relate to project names and pricing, which are key factors in comparing properties. Other columns like 'Loại BĐS' (Property Type) could also be considered for similarity, but the main focus is on the project and price.
-The latest customer query is asking about projects that are similar but have a better price. The table 'BĐS Bán 500' contains information about real estate properties, including the 'Dự án' (Project) column which refers to the name of the real estate project, and the 'Giá (tỷ VNĐ)' (Price in billion VND) column which indicates the price. These columns are relevant to the customer's query as they can be used to compare projects and their prices. Other related columns include 'Diện tích (m²)' (Area in square meters) for assessing similarity and 'Loại BĐS' (Real Estate Type) for identifying similar property types.
+The latest customer query is asking for projects with similar internal facilities to previously listed ones but at a better price. The table 'BĐS Bán 500' contains information about real estate properties, including the 'Tiện ích' (facilities) column and 'Giá (tỷ VNĐ)' (price in billion VND) column. These columns are directly relevant to the query as they provide the necessary data on facilities and pricing. Additionally, 'Dự án' (project name) is relevant for identifying specific projects. Other columns like 'ID' can be used for referencing specific entries if needed.
+The latest customer query is about finding projects with similar amenities to previously listed ones but at a better price. The table 'BĐS Cho thuê 500' contains information about rental properties, including details like 'Dự án' (Project), 'Tiện ích lân cận' (Nearby amenities), 'Giá thuê (triệu/tháng)' (Rental price), and 'Giá/m²/tháng_số' (Price per square meter). These columns are directly related to the query's focus on project amenities and pricing. Therefore, the table is relevant.
 DEBUG: Active Tables: {'BĐS Bán 500': 'BĐS Bán 500'}
-INFO:     127.0.0.1:57392 - "POST /sql_search HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63404 - "POST /sql_search HTTP/1.1" 200 OK

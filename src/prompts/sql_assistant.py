@@ -3,24 +3,21 @@ import json
 
 MESSAGE_REWRITING_TEMPLATE = """
 ### Role
-You are an expert Query Reformulator. Your task is to take a conversation between a "Customer" and a "Support Team" and rewrite the Customer's LATEST message into a single, standalone, and self-contained Vietnamese query.
-
-### Objective
-The rewritten query will be sent to a Text-to-SQL engine. It must contain all the necessary constraints, entities, and filters mentioned earlier in the conversation, while removing conversational filler.
+You are an expert Context Extractor for a database chatbot. Your task is to analyze a conversation between a "Customer" and a "Support Team" and identify the **background context** required to understand the Customer's LATEST message.
 
 ### Rules
-1. **Self-Containment**: The output must be understandable without looking at the history.
-2. **Resolve Pronouns**: Replace words like "them", "it", "those", or "their" with the actual entities mentioned previously.
-3. **Handle Refinements**: If the user adds a filter (e.g., "only the ones in New York"), combine it with the previous subject (e.g., "List all customers in New York").
-4. **No Redundancy**: Do not include conversational fluff like "Thanks", "That's helpful", or "Can you tell me..."
-5. **Detect Topic Shifts**: If the user asks a question that is completely unrelated to the previous context, do not include old information.
-6. **Stay Brief**: Change the customer message as less as possible. Only add the minimum amount of context required to resolve context.
-7. **Output Format**: Output ONLY the rewritten text. Do not provide explanations or labels.
+1. The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, all active references constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the precise entities, dates, IDs, feature, values, etc. mentioned previously.
+2. Only include the context that is directly related to the Customer's LATEST message. If there is no direct context, return an empty string.
+3. The context must sound like something the customer would say.
+4. Output a JSON object inside a json markdown code block using this format:
+```json
+{{
+    "context": "the relevant context in Vietnamese"
+}}
+```
 
 ### Conversation:
 {formatted_conversation}
-
-### Rewritten Query:
 """.strip()
 
 
@@ -81,10 +78,7 @@ SELECT column1, column2 FROM table WHERE condition;
     *   Always include default conditions for filtering invalid data, e.g., `deleted_at IS NULL` and `status != 'cancelled'` if relevant.
     *   Ensure these conditions match the query's intent unless explicitly omitted in the customer's request.
 
-4.  **Output Consistency**:
-    *   The output fields must match the query's intent exactly. Do not add extra columns or omit requested fields.
-
-5.  **Reserved Keywords and Case Sensitivity**:
+4.  **Reserved Keywords and Case Sensitivity**:
     *   Escape reserved keywords or case-sensitive identifiers using double quotes (" "), e.g., "order".
 
 If the customer's question is ambiguous or unclear, you must make your best reasonable guess based on the schema.
