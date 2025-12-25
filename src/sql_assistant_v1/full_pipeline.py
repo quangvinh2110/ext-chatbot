@@ -10,7 +10,7 @@ from .message_rewriter import rewrite_message
 from .schema_linker import link_schema
 from .sql_generator import generate_sql_query
 from .sql_parser import (
-    restrict_select_columns
+    refine_sql_query
 )
 from .state import SQLAssistantState
 
@@ -80,9 +80,9 @@ def build_sql_assistant_without_answer_generation(
         )
     )
     builder.add_node(
-        "restrict_select_columns",
+        "refine_sql_query",
         partial(
-            restrict_select_columns,
+            refine_sql_query,
             database=database
         )
     )
@@ -99,8 +99,8 @@ def build_sql_assistant_without_answer_generation(
     builder.add_edge("rewrite_message", "get_sample_values")
     builder.add_edge("get_sample_values", "link_schema")
     builder.add_edge("link_schema", "gen_sql_query")
-    builder.add_edge("gen_sql_query", "restrict_select_columns")
-    builder.add_edge("restrict_select_columns", "sql_execution")
+    builder.add_edge("gen_sql_query", "refine_sql_query")
+    builder.add_edge("refine_sql_query", "sql_execution")
     builder.add_edge("sql_execution", END)
 
     return builder.compile()

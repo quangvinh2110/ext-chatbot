@@ -12,7 +12,6 @@ from .utils import format_conversation
 from ..utils import parse_json_output
 
 
-
 _message_rewriting_chain_cache: Dict[int, Runnable] = {}
 def get_message_rewriting_chain(chat_model: BaseChatModel) -> Runnable:
     # Use model instance ID as cache key (since ChatOpenAI objects aren't hashable)

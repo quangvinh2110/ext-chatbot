@@ -6,12 +6,14 @@ from ..tools.table.sqlite_database import SQLiteDatabase
 from .state import SQLAssistantState
 
 
-def restrict_select_columns(
+def refine_sql_query(
     state: SQLAssistantState,
     database: SQLiteDatabase,
 ) -> SQLAssistantState:
     """
-    Replaces SELECT * with SELECT t.col1, t.col2 based on filtered_schema.
+    1. Replaces SELECT * with explicit columns based on schema.
+    2. Normalizes WHERE clauses for TEXT columns to be case-insensitive 
+       (e.g., col = 'Val' -> LOWER(col) = 'val').
     """
     sql_queries: List[str] = state.get("sql_queries")
     if not sql_queries:
@@ -22,12 +24,12 @@ def restrict_select_columns(
     schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
     if not schema:
         raise ValueError("Schema is required")
+        
     parsed = parse_one(sql_query, read=database.dialect.lower())
     
     # ---------------------------------------------------------
     # 1. Build Alias Map (Map Alias -> Real Table Name)
     # ---------------------------------------------------------
-    # We need to know the order of tables to expand * correctly
     active_tables_ordered = [] 
     alias_map = {}
 
@@ -35,31 +37,25 @@ def restrict_select_columns(
         real_name = table_node.name
         alias = table_node.alias if table_node.alias else real_name
         
-        # Only register if we haven't seen this alias yet
         if alias not in alias_map:
             alias_map[alias] = real_name
             active_tables_ordered.append(alias)
 
-    # Scan FROM
     for from_node in parsed.find_all(exp.From):
         for table in from_node.find_all(exp.Table):
             register_table(table)
 
-    # Scan JOINs
     for join_node in parsed.find_all(exp.Join):
         register_table(join_node.this)
 
-    print(f"DEBUG: Active Tables: {alias_map}")
-
     # ---------------------------------------------------------
-    # 2. Helper to Generate Column Expressions
+    # 2. Rewrite SELECT Expressions (Expand *)
     # ---------------------------------------------------------
     def get_columns_for_table(table_alias):
         real_name = alias_map.get(table_alias)
         if not real_name or real_name not in schema:
-            return [] # Table not in our allowed schema, return nothing (or handle error)
+            return []
         
-        # Create sqlglot Column objects: alias.column_name
         cols = schema[real_name].keys()
         return [
             exp.Column(
@@ -68,39 +64,121 @@ def restrict_select_columns(
             ) for col in cols
         ]
 
-    # ---------------------------------------------------------
-    # 3. Rewrite SELECT Expressions
-    # ---------------------------------------------------------
-    # We only want to transform the main SELECT statement(s)
     for select_node in parsed.find_all(exp.Select):
         new_expressions = []
-        
         for expression in select_node.expressions:
-            # Case A: Naked * (SELECT *)
             if isinstance(expression, exp.Star) and not isinstance(expression, exp.Count):
-                # Expand columns for ALL active tables in the query
                 for alias in active_tables_ordered:
-                    expanded_cols = get_columns_for_table(alias)
-                    new_expressions.extend(expanded_cols)
-            
-            # Case B: Qualified * (SELECT t.*)
+                    new_expressions.extend(get_columns_for_table(alias))
             elif isinstance(expression, exp.Column) and isinstance(expression.this, exp.Star):
-                # Extract the table alias (e.g., 't' from 't.*')
                 table_alias = expression.table
-                expanded_cols = get_columns_for_table(table_alias)
-                new_expressions.extend(expanded_cols)
-                
-            # Case C: Regular column or other expression (Keep it)
+                new_expressions.extend(get_columns_for_table(table_alias))
             else:
                 new_expressions.append(expression)
 
-        # Replace the old expressions with the new expanded list
         if new_expressions:
             select_node.set("expressions", new_expressions)
 
-    restricted_sql_query = parsed.sql(dialect=database.dialect.lower())
-    def normalize_sql_query(sql_query: str) -> str:
-        return re.sub(r"\s+", " ", sql_query).strip().strip(";").lower()
-    if normalize_sql_query(restricted_sql_query) != normalize_sql_query(sql_query):
-        state["sql_queries"].append(restricted_sql_query)
+    # ---------------------------------------------------------
+    # 3. Helper: Resolve Table for a Column (Used for Type Checking)
+    # ---------------------------------------------------------
+    def resolve_real_table_name(col_node):
+        col_name = col_node.name
+        table_alias = col_node.table
+        
+        # Case A: Explicit Alias
+        if table_alias:
+            return alias_map.get(table_alias)
+        
+        # Case B: Implicit Alias (Search all active tables)
+        candidates = []
+        for alias, real_name in alias_map.items():
+            if real_name in schema and col_name in schema[real_name]:
+                candidates.append(real_name)
+        
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    # ---------------------------------------------------------
+    # 4. Rewrite WHERE/HAVING to be Case Insensitive
+    # ---------------------------------------------------------
+    def make_case_insensitive(node):
+        # Recursively visit children first (Depth-First)
+        # This handles nested AND/OR structures automatically
+        if isinstance(node, (exp.And, exp.Or, exp.Paren, exp.Not, exp.Where)):
+            for child_key in node.arg_types:
+                child = node.args.get(child_key)
+                if isinstance(child, list):
+                    for item in child:
+                        make_case_insensitive(item)
+                elif child:
+                    make_case_insensitive(child)
+            return
+
+        # Handle Binary Comparisons (=, !=, LIKE)
+        if isinstance(node, (exp.EQ, exp.NEQ, exp.Like)):
+            left = node.left
+            right = node.right
+            
+            # Check structure: Column op Literal string
+            if isinstance(left, exp.Column) and isinstance(right, exp.Literal) and right.is_string:
+                real_table = resolve_real_table_name(left)
+                if real_table:
+                    col_type = schema[real_table].get(left.name)
+                    # Only apply to TEXT columns
+                    if col_type == "TEXT":
+                        # Apply LOWER() to the column side
+                        # We use exp.Lower wrapping the existing column node
+                        new_left = exp.Lower(this=left.copy())
+                        
+                        # Lowercase the string literal value
+                        new_right = exp.Literal.string(right.this.lower())
+                        
+                        # Replace in the AST
+                        node.set("this", new_left)
+                        node.set("expression", new_right)
+
+        # Handle IN clause (Column IN ('A', 'B'))
+        if isinstance(node, exp.In) and isinstance(node.this, exp.Column):
+            real_table = resolve_real_table_name(node.this)
+            if real_table:
+                col_type = schema[real_table].get(node.this.name)
+                if col_type == "TEXT":
+                    # 1. Lowercase the column
+                    new_left = exp.Lower(this=node.this.copy())
+                    node.set("this", new_left)
+                    
+                    # 2. Lowercase all literal arguments in the list
+                    new_args = []
+                    for arg in node.args.get("expressions", []):
+                        if isinstance(arg, exp.Literal) and arg.is_string:
+                            new_args.append(exp.Literal.string(arg.this.lower()))
+                        else:
+                            new_args.append(arg)
+                    
+                    node.set("expressions", new_args)
+
+    # Apply to WHERE clause
+    where_clause = parsed.find(exp.Where)
+    if where_clause:
+        make_case_insensitive(where_clause)
+
+    # Apply to HAVING clause (optional, but good practice)
+    having_clause = parsed.find(exp.Having)
+    if having_clause:
+        make_case_insensitive(having_clause)
+
+    # ---------------------------------------------------------
+    # 5. Finalize
+    # ---------------------------------------------------------
+    refined_sql = parsed.sql(dialect=database.dialect.lower())
+    
+    def normalize_sql_query(q: str) -> str:
+        return re.sub(r"\s+", " ", q).strip().strip(";").lower()
+
+    # Only append if changes were made
+    if normalize_sql_query(refined_sql) != normalize_sql_query(sql_query):
+        state["sql_queries"].append(refined_sql)
+        
     return state

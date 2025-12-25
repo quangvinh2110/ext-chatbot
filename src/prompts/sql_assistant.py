@@ -7,8 +7,8 @@ You are an expert Context Extractor for a database chatbot. Your task is to anal
 
 ### Rules
 1. The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, all active references constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the precise entities, dates, IDs, feature, values, etc. mentioned previously.
-2. Only include the context that is directly related to the Customer's LATEST message. If there is no direct context, return an empty string.
-3. The context must sound like something the customer would say.
+2. Only include the context that is directly related to the Customer's LATEST message. If there is no relevant context, return an empty string.
+3. The context must sound like the customer are re-describing the context they are talking about.
 4. Output a JSON object inside a json markdown code block using this format:
 ```json
 {{
@@ -52,42 +52,30 @@ SQL_GEN_TEMPLATE = """
 ### DATE INFORMATION:
 Today is {date}
 
-### INSTRUCTIONS:
+### Instructions:
 You write SQL queries for a {dialect} database. The Support Team is querying the database to answer Customer questions, and your task is to assist by generating valid SQL queries strictly adhering to the database schema provided.
 
 **Table Schema**:
 {table_infos}
 
-
-Translate the latest customer message into one valid {dialect} query, using the conversation history for context (e.g., resolving pronouns or follow-up filters). SQL should be written as a markdown code block:
+Translate the latest customer message into one valid {dialect} query, using the conversation history for context (e.g., resolving pronouns or follow-up filters). SQL should be written in a sql markdown code block:
 For example:
 ```sql
 SELECT column1, column2 FROM table WHERE condition;
 ```
 
-### GUIDELINES:
+### Guidelines:
+1.  Schema Adherence: Use only tables, columns, and relationships explicitly listed in the provided schema. Do not make assumptions about missing or inferred columns/tables.
+2.  {dialect}-Specific Syntax: Use only {dialect} syntax. Be aware that {dialect} has limited built-in date/time functions compared to other sql dialects.
+3.  Conditions: Always include default conditions for filtering invalid data, e.g., `deleted_at IS NULL` and `status != 'cancelled'` if relevant. Ensure these conditions match the query's intent unless explicitly omitted in the customer's request.
+4.  Reserved Keywords and Case Sensitivity: Escape reserved keywords or case-sensitive identifiers using double quotes (" "), e.g., "order".
 
-1.  **Schema Adherence**:
-    *   Use only tables, columns, and relationships explicitly listed in the provided schema.
-    *   Do not make assumptions about missing or inferred columns/tables.
-
-2.  **{dialect}-Specific Syntax**:
-    *   Use only {dialect} syntax. Be aware that {dialect} has limited built-in date/time functions compared to other sql dialects.
-
-3.  **Conditions**:
-    *   Always include default conditions for filtering invalid data, e.g., `deleted_at IS NULL` and `status != 'cancelled'` if relevant.
-    *   Ensure these conditions match the query's intent unless explicitly omitted in the customer's request.
-
-4.  **Reserved Keywords and Case Sensitivity**:
-    *   Escape reserved keywords or case-sensitive identifiers using double quotes (" "), e.g., "order".
-
-If the customer's question is ambiguous or unclear, you must make your best reasonable guess based on the schema.
-Translate the customer's intent into a **single valid {dialect} query** based on the schema provided.
+If the customer's question is ambiguous or unclear, you must make your best reasonable guess based on the schema. Translate the customer's intent into a **single valid {dialect} query** based on the schema provided.
 Ensure the query is optimized, precise, and error-free.
 
 **You must ONLY output ONE SINGLE valid SQL query as markdown codeblock.**
 
-### CONVERSATION HISTORY:
+### Conversation:
 {formatted_conversation}
 """.strip()
 
