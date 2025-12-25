@@ -34,6 +34,7 @@ def get_router_chain(chat_model: BaseChatModel) -> Runnable:
             ChatPromptTemplate(["human", ROUTING_TEMPLATE])
             | chat_model
             | StrOutputParser()
+            | extract_choice
         )
 
     return _router_chain_cache[chat_model_id]
@@ -43,6 +44,7 @@ async def route_conversation(
     conversation: List[AnyMessage],
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
+    **kwargs
 ) -> str:
     """
     Route the conversation to the appropriate data source.
@@ -57,9 +59,8 @@ async def route_conversation(
         "name": table["name"],
         "summary": table["summary"]
     }) for table in table_overview if table["data_source"] == "vector")
-    result = await get_router_chain(chat_model).ainvoke({
+    return await get_router_chain(chat_model).ainvoke({
         "sql_summaries": sql_summaries,
         "vector_summaries": vector_summaries,
         "formatted_conversation": formatted_conversation
-    })
-    return extract_choice(result)
+    }, **kwargs)
