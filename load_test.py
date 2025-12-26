@@ -1,23 +1,3 @@
-#!/usr/bin/env python3
-"""
-Load testing script for SQL Search API.
-
-Reads a JSONL file containing test requests and runs load tests against the API.
-Supports two JSONL formats:
-
-1. Direct format (one JSON object per line):
-   {"current_message": "Show me properties in Ho Chi Minh", "conversation_history": null}
-   {"current_message": "What are the prices?", "conversation_history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
-
-2. Langfuse export format:
-   {"input": "thuê nhà quận 7 có những mức giá nào", "metadata": {"history": "[{\"role\":\"user\",\"content\":\"...\"}]"}, "tags": ["guru"], ...}
-   
-   When using this format, the script will:
-   - Extract "input" as "current_message"
-   - Parse "metadata.history" (JSON string) as "conversation_history"
-   - Filter by tag if --filter-tag is specified (e.g., --filter-tag guru)
-"""
-
 import asyncio
 import json
 import time
@@ -273,11 +253,17 @@ async def run_load_test(
     semaphore = asyncio.Semaphore(concurrency)
     
     async def bounded_request(request_data: Dict[str, Any], request_id: int) -> RequestResult:
-        async with semaphore:
+        await semaphore.acquire()
+        try:
             async with httpx.AsyncClient() as client:
                 return await make_request(
                     client, base_url, endpoint, request_data, request_id, timeout
                 )
+        except Exception:
+            # Re-raise the exception after releasing semaphore
+            raise
+        finally:
+            semaphore.release()
     
     # Create tasks for all requests
     tasks = [
