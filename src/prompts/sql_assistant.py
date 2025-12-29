@@ -54,6 +54,8 @@ Today is {date}
 ### Instructions:
 You write SQL queries for a {dialect} database. The Support Team is querying the database to answer Customer questions, and your task is to assist by generating valid SQL queries strictly adhering to the database schema provided. Translate the latest customer message into a **single valid {dialect} query**, using the conversation history for context (e.g., resolving pronouns or follow-up filters).
 
+**Note:** Unless the user is asking for a specific calculation (like "Count the total..."), you must always retrieve **all columns** for the resulting records.
+
 **Table Schema**:
 {table_infos}
 
