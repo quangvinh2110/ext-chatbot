@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 
-from src.sql_assistant_v1.full_pipeline import build_sql_assistant_without_answer_generation
+from src.sql_assistant_v2.full_pipeline import build_sql_assistant_without_answer_generation
 from src.tools.table.sqlite_database import SQLiteDatabase
 from src.utils.client import (
     get_openai_llm_model,
@@ -343,10 +343,16 @@ async def route_api(request: RouteRequest):
             current_message=request.current_message,
             conversation_history=request.conversation_history
         )
+        
+        # Initialize Langfuse CallbackHandler for tracing
+        langfuse_handler = CallbackHandler()
+        
+        # Call route_conversation with Langfuse tracing
         data_source = await route_conversation(
             conversation=conversation,
             chat_model=chat_model,
-            database=database
+            database=database,
+            config={"callbacks": [langfuse_handler]}
         )
         return RouteResponse(data_source=data_source)
     except ValueError as e:

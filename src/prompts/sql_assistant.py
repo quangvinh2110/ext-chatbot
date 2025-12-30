@@ -6,7 +6,7 @@ MESSAGE_REWRITING_TEMPLATE = """
 You are an expert Context Extractor for a database chatbot. Your task is to analyze a conversation between a "Customer" and a "Support Team" and identify the **background context** required to understand the Customer's LATEST message.
 
 ### Rules
-1. The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, ALL active references and constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the specific entities, dates, IDs, feature, values, etc. mentioned previously.
+1. The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, ALL active references and constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the specific entities, dates, IDs, feature, values, etc. mentioned previously. The final context is **NOT ALLOWED** to contain any pronouns or vague references.
 2. Only include the context that is related to the Customer's LATEST message. If there is no relevant context, return an empty string.
 3. The context must sound like the customer are re-describing the context for the support team to understand.
 4. Output a JSON object inside a json markdown code block using this format:
@@ -31,7 +31,7 @@ Your task:
    - You do NOT need to identify the exact columns for the final SQL query. 
    - You MUST include all columns that provide context, identifiers, or potential join keys related to the entities in the query.
 
-Output must be a valid JSON object inside a ```json code block using this format:
+Output must be a valid JSON object inside a json code block using this format:
 ```json
 {{
     "is_related": "Y or N",
@@ -53,6 +53,8 @@ Today is {date}
 
 ### Instructions:
 You write SQL queries for a {dialect} database. The Support Team is querying the database to answer Customer questions, and your task is to assist by generating valid SQL queries strictly adhering to the database schema provided. Translate the latest customer message into a **single valid {dialect} query**, using the conversation history for context (e.g., resolving pronouns or follow-up filters).
+
+**CRITICAL:** The output of your query is the **final answer** and will be shown *directly* to the user without any further code, processing, or filtering. Therefore, your query must be precise and retrieve only the exact data needed to answer the question—no more, no less.
 
 **Note:** Unless the user is asking for a specific calculation (like "Count the total..."), you must always retrieve **all columns** for the resulting records.
 
@@ -132,3 +134,31 @@ QUERY_DATABASE_TOOL = json.dumps({
         }
     }
 })
+
+
+RERANK_ROWS_TEMPLATE = """
+### Role
+You are an expert Database Row Filter and Re-ranker. Your task is to analyze a conversation and a list of candidate rows retrieved from the table `{table_name}`. You must identify which rows strictly satisfy the user's intent and constraints.
+
+### Table Info
+{table_info}
+
+### Rules
+1. Analyze Intent: Read the **Conversation** to understand what the "Customer" is looking for. Pay attention to the **LATEST** message but use previous messages to resolve context (filters, exact values, numerical ranges, categories).
+2. Verify Rows: The "Candidate Rows" section contains a batch of raw data and many of these are **NOISE** You must verify the data in each row against the user's constraints.
+3. Strict ID Extraction: You must only return the `rowid` of rows that are relevant. If a row is ambiguous or does not match, ignore it. 
+4. Output Format: Output a single JSON object inside a json markdown code block.
+```json
+{{
+    "reasoning": "Reasoning of the decision",
+    "relevant_row_ids": [ row_id_1, row_id_2, ... ] # list of row ids as integers
+}}
+```
+If no rows match, return an empty list `[]`.
+
+### Conversation
+{formatted_conversation}
+
+### Candidate Rows
+{formatted_rows}
+""".strip()

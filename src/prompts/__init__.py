@@ -12,6 +12,7 @@ from .sql_assistant import (
     SCHEMA_LINKING_TEMPLATE,
     ANSWER_GEN_TEMPLATE,
     QUERY_DATABASE_TOOL,
+    RERANK_ROWS_TEMPLATE,
 )
 from .router import ROUTING_TEMPLATE
 
@@ -27,4 +28,5 @@ __all__ = [
     "QUERY_DATABASE_TOOL",
     "MESSAGE_REWRITING_TEMPLATE",
     "ROUTING_TEMPLATE",
+    "RERANK_ROWS_TEMPLATE",
 ]
