@@ -7,6 +7,8 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
+from exp_01 import table_overview
+
 from .utils import format_conversation
 from .state import SQLAssistantState
 from ..tools.table.sqlite_database import SQLiteDatabase
@@ -50,6 +52,12 @@ async def _link_schema_one(
                 "filtered_schema": (table_name, column_names),
                 "error": None
             }
+        table_overview = database.get_table_overview()
+        table_summary = ""
+        for table in table_overview:
+            if table["name"] == table_name:
+                table_summary = table.get("summary", "")
+                break
         table_info = database.get_table_info_no_throw(
             table_name,
             get_col_comments=True,
@@ -58,6 +66,7 @@ async def _link_schema_one(
             sample_count=3
         )
         result = await get_schema_linking_chain(chat_model).ainvoke({
+            "table_summary": table_summary,
             "table_info": table_info, 
             "formatted_conversation": format_conversation(conversation), 
             "dialect": database.dialect
@@ -107,12 +116,16 @@ async def link_schema(
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
 ) -> Dict[str, Dict[str, str]]:
-    if state.get("rewritten_message"):
-        conversation = [HumanMessage(content=state.get("rewritten_message"))]
-    elif state.get("conversation"):
+    # if state.get("rewritten_message"):
+    #     conversation = [HumanMessage(content=state.get("rewritten_message"))]
+    # elif state.get("conversation"):
+    #     conversation = state.get("conversation")
+    # else:
+    #     raise ValueError("conversation or rewritten_message is required in the input")
+    if state.get("conversation"):
         conversation = state.get("conversation")
     else:
-        raise ValueError("conversation or rewritten_message is required in the input")
+        raise ValueError("conversation is required in the input")
     sample_values = state.get("sample_values", {})
     max_retries = 1
     # queue = []

@@ -26,7 +26,7 @@ You are an expert in SQL schema linking.
 Given a {dialect} table schema (DDL) and a conversation history, determine if the table is relevant to the latest customer query.
 
 Your task:
-1. Analyze the table schema and the conversation history. Focus on the latest customer message, using previous messages for context (e.g., to resolve references). Evaluate the Table Name and Table Comment to see if the general topic matches the query. Answer "Y" (Yes) or "N" (No) regarding the table's relevance to the latest query.
+1. Analyze the table schema and the conversation history. Focus on the latest customer message, using previous messages for context (e.g., to resolve references). Evaluate the Table Name and Table Schema to see if the general topic matches the query. Answer "Y" (Yes) or "N" (No) regarding the table's relevance to the latest query.
 2. If the answer is "Y", list ALL columns that are semantically related. 
    - You do NOT need to identify the exact columns for the final SQL query. 
    - You MUST include all columns that provide context, identifiers, or potential join keys related to the entities in the query.
@@ -38,6 +38,9 @@ Output must be a valid JSON object inside a json code block using this format:
     "columns": ["column name 1", "column name 2"]
 }}
 ```
+
+Table Summary:
+{table_summary}
 
 Table Schema (DDL):
 {table_info}

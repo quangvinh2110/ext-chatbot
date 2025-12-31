@@ -65,7 +65,12 @@ async def _link_schema_one(
                 "filtered_schema": (table_name, column_names),
                 "error": None
             }
-
+        table_overview = database.get_table_overview()
+        table_summary = ""
+        for table in table_overview:
+            if table["name"] == table_name:
+                table_summary = table.get("summary", "")
+                break
         table_info = database.get_table_info_no_throw(
             table_name,
             get_col_comments=True,
@@ -73,6 +78,7 @@ async def _link_schema_one(
             sample_count=3
         )
         result = await get_schema_linking_chain(chat_model).ainvoke({
+            "table_summary": table_summary,
             "table_info": table_info, 
             "formatted_conversation": format_conversation(conversation), 
             "dialect": database.dialect
