@@ -6,15 +6,20 @@ MESSAGE_REWRITING_TEMPLATE = """
 You are an expert Context Extractor for a database chatbot. Your task is to analyze a conversation between a "Customer" and a "Support Team" and identify the **background context** required to understand the Customer's LATEST message.
 
 ### Rules
-1. The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, ALL active references and constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the specific entities, dates, IDs, feature, values, etc. mentioned previously. The final context is **NOT ALLOWED** to contain any pronouns or vague references.
-2. Only include the context that is related to the Customer's LATEST message. If there is no relevant context, return an empty string.
-3. The context must sound like the customer are re-describing the context for the support team to understand.
-4. Output a JSON object inside a json markdown code block using this format:
+1. **Context Rewriting:** 
+   - The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, ALL active references and constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the specific entities, dates, IDs, feature, values, etc. mentioned previously. The final context is **NOT ALLOWED** to contain any pronouns or vague references. 
+   - Only include the context that is related to the Customer's LATEST message. If there is no relevant context, return an empty string.
+   - The context must sound like the customer are re-describing the context to the support team.
+2. **Table Selection:** Compare the conversation against the "Table Summaries" provided above. Identify which tables are needed to answer the user's latest question. 
+3. **Output Format:** Output a JSON object inside a json markdown code block using this format:
 ```json
 {{
+    "table_names": ["table name 1", "table name 2", ...],
     "context": "the relevant and specific context in Vietnamese"
 }}
-```
+
+### Table Summaries:
+{table_summaries}
 
 ### Conversation:
 {formatted_conversation}
@@ -26,7 +31,7 @@ You are an expert in SQL schema linking.
 Given a {dialect} table schema (DDL) and a conversation history, determine if the table is relevant to the latest customer query.
 
 Your task:
-1. Analyze the table schema and the conversation history. Focus on the latest customer message, using previous messages for context (e.g., to resolve references). Evaluate the Table Name and Table Schema to see if the general topic matches the query. Answer "Y" (Yes) or "N" (No) regarding the table's relevance to the latest query.
+1. Analyze the table schema and the conversation history. Focus on the latest customer message, using previous messages for context (e.g., to resolve references). Evaluate the Table Summary and Table Schema to see if the general topic matches the query. Answer "Y" (Yes) or "N" (No) regarding the table's relevance to the latest query.
 2. If the answer is "Y", list ALL columns that are semantically related. 
    - You do NOT need to identify the exact columns for the final SQL query. 
    - You MUST include all columns that provide context, identifiers, or potential join keys related to the entities in the query.
@@ -57,23 +62,26 @@ Today is {date}
 ### Instructions:
 You write SQL queries for a {dialect} database. The Support Team is querying the database to answer Customer questions, and your task is to assist by generating valid SQL queries strictly adhering to the database schema provided. Translate the latest customer message into a **single valid {dialect} query**, using the conversation history for context (e.g., resolving pronouns or follow-up filters).
 
-**CRITICAL:** The output of your query is the **final answer** and will be shown *directly* to the user without any further code, processing, or filtering. Therefore, your query must be precise and retrieve only the exact data needed to answer the question—no more, no less.
-
-**Note:** Unless the user is asking for a specific calculation (like "Count the total..."), you must always retrieve **all columns** for the resulting records.
-
-**Table Schema**:
-{table_infos}
-
 ### Guidelines:
-1.  Schema Adherence: Use only tables, columns, and relationships explicitly listed in the provided schema. Do not make assumptions about missing or inferred columns/tables.
-2.  {dialect}-Specific Syntax: Use only {dialect} syntax. Be aware that {dialect} has limited built-in date/time functions compared to other sql dialects.
-3.  Conditions: Always include default conditions for filtering invalid data, e.g., `deleted_at IS NULL` and `status != 'cancelled'` if relevant. Ensure these conditions match the query's intent unless explicitly omitted in the customer's request.
-4.  Reserved Keywords and Case Sensitivity: Escape reserved keywords or case-sensitive identifiers using double quotes (" "), e.g., "order".
+1. Use only tables, columns, and relationships explicitly listed in the provided schema. Do not make assumptions about missing or inferred columns/tables.
+2. Use only {dialect} syntax. Be aware that {dialect} has limited built-in date/time functions compared to other sql dialects.
+3. Escape reserved keywords or case-sensitive identifiers using double quotes (" "), e.g., "order".
+4. If the customer's question is ambiguous or unclear, you must make your best reasonable guess based on the schema. Ensure the query is optimized, precise, and error-free. 
 
-If the customer's question is ambiguous or unclear, you must make your best reasonable guess based on the schema. Ensure the query is optimized, precise, and error-free. Output SQL should be written in a sql markdown code block. For example:
+### Output Format:
+- Briefly explain your logic (1-2 sentences). Identify the user's intent, how it relates to previous messages, and which tables/columns you selected. The write a valid SQL query in a sql markdown code block.
+- Output example:
+Reasoning: The user is asking for recent orders. I will filter the 'orders' table for records created in the last 7 days.
 ```sql
-SELECT column1, column2 FROM table WHERE condition;
+SELECT * FROM "orders" WHERE created_at >= DATE('now', '-7 days');
 ```
+
+**CRITICAL:** The code inside the ```sql ``` block is the **final answer** that will be executed. It must be precise and retrieve only the exact data needed—no more, no less.
+
+**Note:** Unless the user is asking for a specific calculation (like "Count the total..."), you must always retrieve **all columns** (`SELECT *`) for the resulting records.
+
+### Table Schema:
+{table_infos}
 
 ### Conversation:
 {formatted_conversation}

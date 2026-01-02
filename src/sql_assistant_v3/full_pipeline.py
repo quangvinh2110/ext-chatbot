@@ -6,14 +6,10 @@ from langgraph.graph.state import CompiledStateGraph
 from langchain_core.language_models import BaseChatModel
 
 from ..tools.table.sqlite_database import SQLiteDatabase
-from .message_rewriter import rewrite_message
 from .schema_linker import link_schema
-from .sql_generator import generate_sql_query
-from .sql_parser import (
-    refine_sql_query
-)
+from .rows_reranker import rerank_rows
 from .state import SQLAssistantState
-
+from .message_rewriter import rewrite_message
 
 
 async def get_sample_values(
@@ -31,18 +27,6 @@ async def get_sample_values(
     return state
 
 
-async def sql_execution(
-    state: SQLAssistantState,
-    database: SQLiteDatabase,
-) -> SQLAssistantState:
-    sql_queries = state.get("sql_queries", [])
-    if not sql_queries:
-        raise ValueError("SQL queries are required")
-    sql_query = sql_queries[-1]
-    state["db_output"] = await database.run_no_throw(sql_query, include_columns=True)
-    return state
-
-
 def build_sql_assistant_without_answer_generation(
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
@@ -54,7 +38,6 @@ def build_sql_assistant_without_answer_generation(
         partial(
             rewrite_message,
             chat_model=chat_model,
-            database=database
         )
     )
     builder.add_node(
@@ -73,35 +56,17 @@ def build_sql_assistant_without_answer_generation(
         )
     )
     builder.add_node(
-        "gen_sql_query",
+        "rerank_rows",
         partial(
-            generate_sql_query, 
+            rerank_rows, 
             chat_model=chat_model,
             database=database
         )
     )
-    builder.add_node(
-        "refine_sql_query",
-        partial(
-            refine_sql_query,
-            database=database
-        )
-    )
-    builder.add_node(
-        "sql_execution", 
-        partial(
-            sql_execution,
-            database=database
-        )
-    )
-
-    # Add edges
     builder.add_edge(START, "rewrite_message")
     builder.add_edge("rewrite_message", "get_sample_values")
     builder.add_edge("get_sample_values", "link_schema")
-    builder.add_edge("link_schema", "gen_sql_query")
-    builder.add_edge("gen_sql_query", "refine_sql_query")
-    builder.add_edge("refine_sql_query", "sql_execution")
-    builder.add_edge("sql_execution", END)
+    builder.add_edge("link_schema", "rerank_rows")
+    builder.add_edge("rerank_rows", END)
 
     return builder.compile()

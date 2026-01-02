@@ -1,15 +1,12 @@
-from typing import Dict, List, Optional, Any
 import asyncio
+from typing import Optional, List, Dict, Any
 
 from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, HumanMessage
+from langchain_core.messages import AnyMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-from exp_01 import table_overview
-
-from .utils import format_conversation
 from .state import SQLAssistantState
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import SCHEMA_LINKING_TEMPLATE
@@ -31,12 +28,29 @@ def get_schema_linking_chain(chat_model: BaseChatModel) -> Runnable:
     return _schema_linking_chain_cache[chat_model_id]
 
 
+def format_conversation(conversation: List[AnyMessage]) -> str:
+    formatted_conversation = ""
+    end_index = len(conversation) - 1 
+    for ind in range(len(conversation) - 1, -1, -1):
+        if conversation[ind].type == "human":
+            end_index = ind
+            break
+    for message in conversation[:end_index]:
+        if message.type == "human":
+            formatted_conversation += f"Customer: {message.content}\n"
+        elif message.type == "ai":
+            formatted_conversation += f"Support Team: {message.content}\n"
+    if not formatted_conversation:
+        formatted_conversation = "No conversation history\n"
+    formatted_conversation += f"\nLatest Customer Message: {conversation[end_index].content}"
+    return formatted_conversation
+
+
 async def _link_schema_one(
     conversation: List[AnyMessage],
     table_name: str,
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
-    column_sample_values: Optional[Dict[str, List[str]]] = None,
     allowed_col_names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     try:
@@ -46,8 +60,7 @@ async def _link_schema_one(
                 "input_item": {
                     "table_name": table_name,
                     "conversation": conversation,
-                    "allowed_col_names": allowed_col_names,
-                    "column_sample_values": column_sample_values
+                    "allowed_col_names": allowed_col_names
                 },
                 "filtered_schema": (table_name, column_names),
                 "error": None
@@ -62,7 +75,6 @@ async def _link_schema_one(
             table_name,
             get_col_comments=True,
             allowed_col_names=allowed_col_names,
-            column_sample_values=column_sample_values,
             sample_count=3
         )
         result = await get_schema_linking_chain(chat_model).ainvoke({
@@ -71,6 +83,7 @@ async def _link_schema_one(
             "formatted_conversation": format_conversation(conversation), 
             "dialect": database.dialect
         })
+        
         if "is_related" not in result or result["is_related"] not in ["Y", "N"]:
             raise ValueError("Invalid response from schema linking chain")
         if result["is_related"] == "Y" and not result.get("columns"):
@@ -81,8 +94,7 @@ async def _link_schema_one(
                 "input_item": {
                     "table_name": table_name,
                     "conversation": conversation,
-                    "allowed_col_names": allowed_col_names,
-                    "column_sample_values": column_sample_values
+                    "allowed_col_names": allowed_col_names
                 },
                 "filtered_schema": None,
                 "error": None
@@ -90,10 +102,9 @@ async def _link_schema_one(
         else:
             return {
                 "input_item": {
-                    "table_name": table_name,
-                    "conversation": conversation,
-                    "allowed_col_names": allowed_col_names,
-                    "column_sample_values": column_sample_values
+                    "table_name": table_name, 
+                    "conversation": conversation, 
+                    "allowed_col_names": allowed_col_names
                 },
                 "filtered_schema": (table_name, result["columns"]),
                 "error": None
@@ -102,9 +113,8 @@ async def _link_schema_one(
         return {
             "input_item": {
                 "table_name": table_name, 
-                "conversation": conversation,
-                "allowed_col_names": allowed_col_names,
-                "column_sample_values": column_sample_values
+                "conversation": conversation, 
+                "allowed_col_names": allowed_col_names
             },
             "filtered_schema": None,
             "error": str(e)
@@ -116,17 +126,9 @@ async def link_schema(
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
 ) -> Dict[str, Dict[str, str]]:
-    # if state.get("rewritten_message"):
-    #     conversation = [HumanMessage(content=state.get("rewritten_message"))]
-    # elif state.get("conversation"):
-    #     conversation = state.get("conversation")
-    # else:
-    #     raise ValueError("conversation or rewritten_message is required in the input")
-    if state.get("conversation"):
-        conversation = state.get("conversation")
-    else:
-        raise ValueError("conversation is required in the input")
-    sample_values = state.get("sample_values", {})
+    conversation = state.get("conversation")
+    if not conversation:
+        raise ValueError("conversation is required")
     max_retries = 1
     # queue = []
     # for table in  database.get_usable_table_names():
@@ -137,11 +139,7 @@ async def link_schema(
     #             "conversation": conversation
     #         })
     queue = [
-        {
-            "table_name": table_name, 
-            "conversation": conversation,
-            "column_sample_values": sample_values.get(table_name),
-        } 
+        {"table_name": table_name, "conversation": conversation} 
         for table_name in database.get_usable_table_names()
     ]
     successful_results = []
