@@ -6,24 +6,24 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 
-from .utils import format_conversation
 from .state import SQLAssistantState
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import SQL_GEN_TEMPLATE
-from ..utils import get_today_date_en, parse_sql_output
+from ..utils import get_today_date_en, parse_sql_output, format_conversation
 
 
 def preprocess_for_sql_query_generation(
     state: SQLAssistantState,
     database: SQLiteDatabase,
 ) -> List[AnyMessage]:
-    linked_schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
+    linked_schema: Dict[str, Dict[str, str]] = state.get("linked_schema", {})
     if not linked_schema:
         raise ValueError("linked_schema not found in the input")
+    conversation: List[AnyMessage] = []
     if state.get("rewritten_message"):
         conversation = [HumanMessage(content=state.get("rewritten_message"))]
     elif state.get("conversation"):
-        conversation = state.get("conversation")
+        conversation = state.get("conversation", [])
     else:
         raise ValueError("conversation or rewritten_message is required")
     formatted_conversation = format_conversation(conversation)

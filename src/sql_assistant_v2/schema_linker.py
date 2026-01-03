@@ -7,8 +7,8 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-from .utils import format_conversation
 from .state import SQLAssistantState
+from ..utils import format_conversation
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import SCHEMA_LINKING_TEMPLATE
 
@@ -113,11 +113,12 @@ async def link_schema(
     state: SQLAssistantState,
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
-) -> Dict[str, Dict[str, str]]:
+) -> SQLAssistantState:
+    conversation: List[AnyMessage] = []
     if state.get("rewritten_message"):
         conversation = [HumanMessage(content=state.get("rewritten_message"))]
     elif state.get("conversation"):
-        conversation = state.get("conversation")
+        conversation = state.get("conversation", [])
     else:
         raise ValueError("conversation or rewritten_message is required in the input")
     # if state.get("conversation"):

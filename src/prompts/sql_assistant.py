@@ -14,7 +14,7 @@ You are an expert Context Extractor for a database chatbot. Your task is to anal
 3. **Output Format:** Output a JSON object inside a json markdown code block using this format:
 ```json
 {{
-    "table_names": ["table name 1", "table name 2", ...],
+    "relevant_tables": ["table name 1", "table name 2", ...],
     "context": "the relevant and specific context in Vietnamese"
 }}
 

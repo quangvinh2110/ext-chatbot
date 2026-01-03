@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
 from .state import SQLAssistantState
+from ..utils import format_conversation
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import SCHEMA_LINKING_TEMPLATE
 
@@ -26,24 +27,6 @@ def get_schema_linking_chain(chat_model: BaseChatModel) -> Runnable:
         )
     
     return _schema_linking_chain_cache[chat_model_id]
-
-
-def format_conversation(conversation: List[AnyMessage]) -> str:
-    formatted_conversation = ""
-    end_index = len(conversation) - 1 
-    for ind in range(len(conversation) - 1, -1, -1):
-        if conversation[ind].type == "human":
-            end_index = ind
-            break
-    for message in conversation[:end_index]:
-        if message.type == "human":
-            formatted_conversation += f"Customer: {message.content}\n"
-        elif message.type == "ai":
-            formatted_conversation += f"Support Team: {message.content}\n"
-    if not formatted_conversation:
-        formatted_conversation = "No conversation history\n"
-    formatted_conversation += f"\nLatest Customer Message: {conversation[end_index].content}"
-    return formatted_conversation
 
 
 async def _link_schema_one(
@@ -125,7 +108,7 @@ async def link_schema(
     state: SQLAssistantState,
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
-) -> Dict[str, Dict[str, str]]:
+) -> SQLAssistantState:
     conversation = state.get("conversation")
     if not conversation:
         raise ValueError("conversation is required")

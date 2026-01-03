@@ -15,16 +15,17 @@ def refine_sql_query(
     2. Normalizes WHERE clauses for TEXT columns to be case-insensitive 
        (e.g., col = 'Val' -> LOWER(col) = 'val').
     """
-    sql_queries: List[str] = state.get("sql_queries", [])
+    sql_queries: List[str] = state.get("sql_queries")
     if not sql_queries:
         raise ValueError("SQL queries are required")
     sql_query = sql_queries[-1]
     if not sql_query:
         raise ValueError("SQL query is required")
-    schema: Dict[str, Dict[str, str]] = state.get("linked_schema", {})
-    if not schema:
-        raise ValueError("Schema is required")
-        
+    schema: Dict[str, Dict[str, str]] = {}
+    for table_name in database.get_usable_table_names():
+        schema[table_name] = {}
+        for col_name in database.get_column_names(table_name):
+            schema[table_name][col_name] = database.get_column_datatype(table_name, col_name)
     parsed = parse_one(sql_query, read=database.dialect.lower())
     
     # ---------------------------------------------------------

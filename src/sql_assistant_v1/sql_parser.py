@@ -1,6 +1,6 @@
 import re
 from sqlglot import exp, parse_one
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from .state import SQLAssistantState
 from ..tools.table.sqlite_database import SQLiteDatabase
@@ -10,13 +10,13 @@ def get_predicate_values(
     state: SQLAssistantState,
     database: SQLiteDatabase,
 ) -> SQLAssistantState:
-    sql_queries: List[str] = state.get("sql_queries")
+    sql_queries: List[str] = state.get("sql_queries", [])
     if not sql_queries:
         raise ValueError("SQL queries are required")
     sql_query = sql_queries[-1]
     if not sql_query:
         raise ValueError("SQL query is required")
-    schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
+    schema: Dict[str, Dict[str, str]] = state.get("linked_schema", {})
     if not schema:
         raise ValueError("Schema is required")
     parsed = parse_one(sql_query, read=database.dialect.lower())
@@ -135,7 +135,7 @@ async def get_similar_predicate_values(
     state: SQLAssistantState,
     database: SQLiteDatabase,
 ) -> SQLAssistantState:
-    predicate_values = state.get("predicate_values")
+    predicate_values: List[Dict[str, Any]] = state.get("predicate_values", [])
     if not predicate_values:
         state["tbl_col_sample_values"] = {}
         return state
@@ -156,13 +156,13 @@ def restrict_select_columns(
     """
     Replaces SELECT * with SELECT t.col1, t.col2 based on filtered_schema.
     """
-    sql_queries: List[str] = state.get("sql_queries")
+    sql_queries: List[str] = state.get("sql_queries", [])
     if not sql_queries:
         raise ValueError("SQL queries are required")
     sql_query = sql_queries[-1]
     if not sql_query:
         raise ValueError("SQL query is required")
-    schema: Dict[str, Dict[str, str]] = state.get("linked_schema")
+    schema: Dict[str, Dict[str, str]] = state.get("linked_schema", {})
     if not schema:
         raise ValueError("Schema is required")
     parsed = parse_one(sql_query, read=database.dialect.lower())

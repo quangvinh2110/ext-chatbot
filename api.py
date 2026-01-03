@@ -1,6 +1,7 @@
 """
 FastAPI service for SQL Search API
 """
+import json
 import os
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from sqlalchemy import create_engine
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 
-from src.sql_assistant_v2.full_pipeline import build_sql_assistant_without_answer_generation
+from src.sql_assistant_v0.full_pipeline import build_sql_assistant_without_answer_generation
 from src.tools.table.sqlite_database import SQLiteDatabase
 from src.utils.client import (
     get_openai_llm_model,
@@ -22,7 +23,7 @@ from src.utils.client import (
 from src.router.llm_router import route_conversation
 
 # Load environment variables
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), "env", "openai.env"))
 
 # Global variables for pipeline, database, and chat model
 sql_assistant_pipeline = None
@@ -53,13 +54,7 @@ class SQLSearchResponse(BaseModel):
     """Response model for SQL search query"""
     sql_query: str = Field(..., description="Generated SQL query")
     db_output: List[Dict[str, Any]] = Field(..., description="Database query results")
-    linked_schema: Dict[str, Dict[str, str]] = Field(..., description="Linked schema information")
     ddl_schema: str = Field(..., description="Linked schema information in string format")
-    predicate_values: Optional[List[Dict[str, Any]]] = Field(None, description="Extracted predicate values")
-    tbl_col_sample_values: Optional[Dict[str, Dict[str, List[Any]]]] = Field(
-        None, 
-        description="Sample values for table columns"
-    )
 
 
 class RouteResponse(BaseModel):
@@ -79,6 +74,7 @@ def initialize_pipeline(
     llm_model: str,
     llm_base_url: str,
     llm_api_key: str,
+    llm_kwargs: Dict[str, Any],
     embed_model: str,
     embed_base_url: str,
 ) -> None:
@@ -117,7 +113,8 @@ def initialize_pipeline(
     chat_model = get_openai_llm_model(
         model=llm_model,
         base_url=llm_base_url,
-        api_key=SecretStr(llm_api_key)
+        api_key=SecretStr(llm_api_key),
+        **llm_kwargs
     )
     if chat_model is None:
         raise ValueError("Failed to initialize chat model")
@@ -182,6 +179,7 @@ async def lifespan(app: FastAPI):
     llm_api_key = os.getenv("LLM_API_KEY")
     if not llm_api_key:
         raise ValueError("LLM_API_KEY is not set")
+    llm_kwargs = json.loads(os.getenv("LLM_KWARGS", "{}"))
     embed_model = os.getenv("EMBED_MODEL")
     if not embed_model:
         raise ValueError("EMBED_MODEL is not set")
@@ -221,6 +219,7 @@ async def lifespan(app: FastAPI):
         llm_model=llm_model,
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
+        llm_kwargs=llm_kwargs,
         embed_model=embed_model,
         embed_base_url=embed_base_url,
     )
@@ -281,12 +280,8 @@ async def sql_search(request: SQLSearchRequest):
         # Initialize state
         initial_state = {
             "conversation": conversation,
-            "linked_schema": {},
             "sql_queries": [],
-            "predicate_values": [],
-            "tbl_col_sample_values": {},
             "db_output": [],
-            "final_answer": None,
         }
         
         # Initialize Langfuse CallbackHandler for tracing
@@ -297,26 +292,36 @@ async def sql_search(request: SQLSearchRequest):
             initial_state,
             config={"callbacks": [langfuse_handler]}
         )
-        linked_schema = final_state.get("linked_schema", {})
-        ddl_schema = "\n\n".join([
-            database.get_table_info_no_throw(
-                table_name,
-                get_col_comments=True,
-                allowed_col_names=list(col_types.keys()),
-                sample_count=5,
-            )
-            for table_name, col_types in linked_schema.items()
-        ]) if linked_schema and database else ""
+        if database:
+            linked_schema = final_state.get("linked_schema", {})
+            if linked_schema:
+                ddl_schema = "\n\n".join([
+                    database.get_table_info_no_throw(
+                        table_name,
+                        get_col_comments=True,
+                        allowed_col_names=list(col_types.keys()),
+                        sample_count=5,
+                    )
+                    for table_name, col_types in linked_schema.items()
+                ])
+            else:
+                ddl_schema = "\n\n".join([
+                    database.get_table_info_no_throw(
+                        table_name,
+                        get_col_comments=True,
+                        sample_count=3,
+                    )
+                    for table_name in database.get_usable_table_names()
+                ])
+        else:
+            ddl_schema = ""
         sql_queries = final_state.get("sql_queries", [])
         
         # Extract results
         return SQLSearchResponse(
             sql_query=sql_queries[-1] if sql_queries else "",
             db_output=final_state.get("db_output", {}).get("result", [])[:5],
-            linked_schema=final_state.get("linked_schema", {}),
             ddl_schema=ddl_schema,
-            predicate_values=final_state.get("predicate_values"),
-            tbl_col_sample_values=final_state.get("tbl_col_sample_values"),
         )
         
     except ValueError as e:

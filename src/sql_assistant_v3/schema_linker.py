@@ -7,8 +7,8 @@ from langchain_core.messages import AnyMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-from .utils import format_conversation
 from .state import SQLAssistantState
+from ..utils import format_conversation
 from ..tools.table.sqlite_database import SQLiteDatabase
 from ..prompts import SCHEMA_LINKING_TEMPLATE
 

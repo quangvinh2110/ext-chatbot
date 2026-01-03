@@ -6,10 +6,9 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
-from ..prompts import MESSAGE_REWRITING_TEMPLATE
 from .state import SQLAssistantState
-from .utils import format_conversation
-from ..utils import parse_json_output
+from ..prompts import MESSAGE_REWRITING_TEMPLATE
+from ..utils import parse_json_output, format_conversation
 from ..tools.table.sqlite_database import SQLiteDatabase
 
 
@@ -33,7 +32,7 @@ async def rewrite_message(
     state: SQLAssistantState,
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
-) -> Dict[str, Dict[str, str]]:
+) -> SQLAssistantState:
     conversation = state.get("conversation")
     if not conversation:
         raise ValueError("conversation is required")
@@ -45,7 +44,7 @@ async def rewrite_message(
         "formatted_conversation": format_conversation(conversation),
         "table_summaries": table_summaries
     })
-    relevant_table_names = rewritten_message.get("table_names", [])
+    relevant_table_names = rewritten_message.get("relevant_tables", [])
     context = rewritten_message.get("context", "").strip()
     last_human_message: HumanMessage = HumanMessage(content="")
     for message in conversation[::-1]:

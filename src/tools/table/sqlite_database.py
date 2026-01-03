@@ -344,7 +344,7 @@ class SQLiteDatabase:
                 comment_parts.append(col_cmt)
             
             # Add sample values if available
-            if col.name in column_sample_values and column_sample_values[col.name]:
+            if column_sample_values.get(col.name, []):
                 raw_sample_values = column_sample_values[col.name]
                 display_values: List[str] = []
                 for sample in raw_sample_values:
@@ -480,11 +480,10 @@ class SQLiteDatabase:
                     result = connection.execute(query)
                     remaining_length = 1000
                     for val, in result:
-                        val_str = str(val)
-                        # Represent type: quote strings, leave others as-is
-                        display_val = f'"{val_str}"' if isinstance(val, str) else val_str
-                        column_sample_values[col.name].append(display_val)
-                        remaining_length -= len(display_val)
+                        if isinstance(val, float):
+                            val = round(val, 2)
+                        column_sample_values[col.name].append(val)
+                        remaining_length -= len(str(val))
                         if remaining_length <= 0:
                             break
 

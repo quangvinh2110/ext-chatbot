@@ -5,7 +5,6 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage
 
 from ..tools.table.sqlite_database import SQLiteDatabase
 from .schema_linker import link_schema

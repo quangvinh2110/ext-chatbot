@@ -10,13 +10,13 @@ from .io import (
 from .client import (
     get_infinity_embeddings,
     get_openai_llm_model,
-    get_thinking_openai_llm_model,
 )
-from .date import (
+from .formatter import (
     get_today_date_en,
     get_today_date_vi,
+    format_conversation,
 )
-from .parsing import (
+from .parser import (
     parse_sql_output,
     parse_json_output,
 )
@@ -31,9 +31,9 @@ __all__ = [
     "read_json",
     "get_infinity_embeddings",
     "get_openai_llm_model",
-    "get_thinking_openai_llm_model",
     "get_today_date_en",
     "get_today_date_vi",
+    "format_conversation",
     "parse_sql_output",
     "parse_json_output",
 ]
