@@ -6,7 +6,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from langchain_core.language_models import BaseChatModel
 
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 from .schema_linker import link_schema
 from .sql_generator import generate_sql_query
 from .sql_parser import (

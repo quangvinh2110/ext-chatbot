@@ -7,13 +7,11 @@ import json
 from typing import Dict, Any, List, Optional, Iterable
 from tqdm import tqdm
 
-from ...utils.client import get_infinity_embeddings
+from .client import get_infinity_embeddings
 
 
 def _safe_filename(name: str) -> str:
     """Make a reasonably safe filename from table/column names."""
-    if not isinstance(name, str):
-        name = str(name)
     # Keep unicode but remove path separators and problematic chars
     name = name.replace(os.sep, "_").replace("\x00", "_")
     name = re.sub(r"[<>:\"/\\|?*\n\r\t]+", "_", name).strip()
@@ -31,8 +29,6 @@ def truncate_word(content: Any, *, length: int, suffix: str = "...") -> str:
     if len(content) <= length:
         return content
     return content[: length - len(suffix)].rsplit(" ", 1)[0] + suffix
-
-
 
 
 def pydantic_to_sqlite_type(pydantic_type: str) -> str:
@@ -267,7 +263,7 @@ def create_faiss(
     *,
     if_exists: str = "replace",  # "replace", "append", or "fail"
     embed_model: str,
-    infinity_api_url: str,
+    embed_api_url: str,
     batch_size: int = 128,
     distinct_values: bool = True,
     normalize: bool = True,
@@ -287,7 +283,7 @@ def create_faiss(
         Summary dict with created indexes and counts.
 
     Embeddings:
-        Uses `langchain_community.embeddings.InfinityEmbeddings`. Pass `infinity_api_url`
+        Uses `langchain_community.embeddings.InfinityEmbeddings`. Pass `embed_api_url`
         (typically ending with `/v1`) or set `INFINITY_API_URL`.
     """
     # Determine table name (same rule as create_sqlite_table)
@@ -303,15 +299,13 @@ def create_faiss(
 
     conn = sqlite3.connect(db_path)
     try:
-        if infinity_api_url is None:
-            infinity_api_url = os.getenv("INFINITY_API_URL")
-        if not infinity_api_url:
+        if not embed_api_url:
             raise ValueError(
-                "Missing infinity_api_url. Pass create_faiss(..., infinity_api_url=...) "
+                "Missing embed_api_url. Pass create_faiss(..., embed_api_url=...) "
                 "or set INFINITY_API_URL (e.g. http://localhost:7797/v1)."
             )
 
-        embeddings = get_infinity_embeddings(model=embed_model, infinity_api_url=infinity_api_url)
+        embeddings = get_infinity_embeddings(model=embed_model, infinity_api_url=embed_api_url)
         text_cols = _get_text_columns(conn, table_name)
         created: List[Dict[str, Any]] = []
 
@@ -323,7 +317,7 @@ def create_faiss(
                 raise FileExistsError(f"FAISS artifacts already exist for {table_name}.{col}")
 
             existing_values: List[str] = []
-            existing_set = set()
+            existing_set: set[str] = set()
             index = None
 
             if if_exists == "replace":
@@ -334,10 +328,21 @@ def create_faiss(
             elif if_exists == "append":
                 if os.path.exists(values_path):
                     with open(values_path, "r", encoding="utf-8") as f:
-                        existing_values = json.load(f) or []
-                    if not isinstance(existing_values, list):
+                        existing_values_raw = json.load(f) or []
+                    if not isinstance(existing_values_raw, list):
                         raise ValueError(f"Unexpected mapping file format: {values_path}")
-                    existing_set = set(str(x) for x in existing_values)
+                    # Normalize existing values: strip prefix if present (we store only values)
+                    prefix = f"{col}: "
+                    existing_values = []
+                    existing_set.clear()  # Clear and rebuild for checking formatted values
+                    for existing_val in existing_values_raw:
+                        val_str = str(existing_val)
+                        # Strip prefix if present (migration from old format)
+                        if val_str.startswith(prefix):
+                            val_str = val_str[len(prefix):]
+                        existing_values.append(val_str)
+                        # Add formatted version to set for duplicate checking
+                        existing_set.add(f"{prefix}{val_str}")
                 if os.path.exists(index_path):
                     index = faiss.read_index(index_path)
             elif if_exists not in ("replace", "append", "fail"):
@@ -345,20 +350,28 @@ def create_faiss(
                     f"Invalid if_exists value: {if_exists}. Must be 'replace', 'append', or 'fail'"
                 )
 
-            # Collect values to embed
-            values: List[str] = []
+            # Collect values to embed (format: "column_name: column_value")
+            # But store only column values (without prefix) in JSON
+            values_to_embed: List[str] = []  # Formatted for embedding
+            values_to_store: List[str] = []  # Unformatted for storage
+            prefix = f"{col}: "
+            prefix_len = len(prefix)
             for v in _iter_text_values(conn, table_name, col, distinct=distinct_values):
                 v = v.strip()
                 if not v:
                     continue
-                if max_text_length and len(v) > max_text_length:
-                    v = v[:max_text_length]
-                if existing_set and v in existing_set:
+                # Truncate value part to account for prefix length
+                if max_text_length and len(v) > (max_text_length - prefix_len):
+                    v = v[:max_text_length - prefix_len]
+                # Format as "column_name: column_value" for embedding
+                formatted_value = f"{prefix}{v}"
+                if existing_set and formatted_value in existing_set:
                     continue
-                values.append(v)
+                values_to_embed.append(formatted_value)
+                values_to_store.append(v)  # Store only the value
 
             # Nothing new to add
-            if not values and index is not None and existing_values:
+            if not values_to_embed and index is not None and existing_values:
                 created.append(
                     {
                         "table": table_name,
@@ -378,12 +391,12 @@ def create_faiss(
             # Embed in batches and add incrementally to avoid memory issues
             # This way we only hold one batch in RAM at a time
             with tqdm(
-                total=len(values),
+                total=len(values_to_embed),
                 desc=f"Embedding {table_name}.{col}",
                 unit="values"
             ) as pbar:
-                for i in range(0, len(values), batch_size):
-                    batch = values[i : i + batch_size]
+                for i in range(0, len(values_to_embed), batch_size):
+                    batch = values_to_embed[i : i + batch_size]
                     
                     # Embed this batch
                     batch_vectors = embeddings.embed_documents(batch)
@@ -393,33 +406,33 @@ def create_faiss(
                         continue
                     
                     # Convert to numpy array
-                    x = np.asarray(batch_vectors, dtype="float32")
-                    if x.ndim != 2:
-                        raise ValueError(f"Unexpected embedding matrix shape: {x.shape}")
+                    vectors = np.asarray(batch_vectors, dtype="float32")
+                    if vectors.ndim != 2:
+                        raise ValueError(f"Unexpected embedding matrix shape: {vectors.shape}")
                     
                     # Determine dimension from first batch
                     if d is None:
-                        d = int(x.shape[1])
+                        d = int(vectors.shape[1])
                         if index is None:
                             index = faiss.IndexFlatIP(d) if normalize else faiss.IndexFlatL2(d)
-                    elif x.shape[1] != d:
+                    elif vectors.shape[1] != d:
                         raise ValueError(
-                            f"Embedding dimension mismatch: expected {d}, got {x.shape[1]}"
+                            f"Embedding dimension mismatch: expected {d}, got {vectors.shape[1]}"
                         )
                     
                     # Normalize if needed
                     if normalize:
-                        faiss.normalize_L2(x)
+                        faiss.normalize_L2(vectors)
                     
                     # Add to index immediately (incremental, memory-efficient)
                     if index is None:
                         raise RuntimeError("FAISS index was not initialized before adding vectors")
-                    index.add(x)
+                    index.add(vectors)
                     total_added += len(batch)
                     pbar.update(len(batch))
 
-            # Build final values list
-            final_values = existing_values + values
+            # Build final values list (store only column values, not formatted)
+            final_values = existing_values + values_to_store
 
             # Save index and mapping if we have an index (either loaded or newly created)
             if index is not None:

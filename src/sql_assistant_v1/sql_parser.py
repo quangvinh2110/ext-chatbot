@@ -3,7 +3,7 @@ from sqlglot import exp, parse_one
 from typing import List, Dict, Any
 
 from .state import SQLAssistantState
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 
 
 def get_predicate_values(

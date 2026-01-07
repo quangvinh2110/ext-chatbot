@@ -3,7 +3,7 @@ import re
 from sqlglot import parse_one, exp
 
 from .state import SQLAssistantState
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 
 
 def refine_sql_query(

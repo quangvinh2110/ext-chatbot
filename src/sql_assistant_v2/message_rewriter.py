@@ -9,7 +9,6 @@ from langchain_core.messages import HumanMessage
 from .state import SQLAssistantState
 from ..prompts import MESSAGE_REWRITING_TEMPLATE
 from ..utils import parse_json_output, format_conversation
-from ..tools.table.sqlite_database import SQLiteDatabase
 
 
 _message_rewriting_chain_cache: Dict[int, Runnable] = {}
@@ -31,28 +30,18 @@ def get_message_rewriting_chain(chat_model: BaseChatModel) -> Runnable:
 async def rewrite_message(
     state: SQLAssistantState,
     chat_model: BaseChatModel,
-    database: SQLiteDatabase,
 ) -> SQLAssistantState:
     conversation = state.get("conversation")
     if not conversation:
         raise ValueError("conversation is required")
-    table_overview = database.get_table_overview()
-    table_summaries = ""
-    if table_overview:
-        table_summaries = "\n".join([f"- Table Name: {table['name']}\n  Table Summary: {table['summary']}" for table in table_overview if table["name"] in database.get_usable_table_names()])
-    rewritten_message = await get_message_rewriting_chain(chat_model).ainvoke({
+    result = await get_message_rewriting_chain(chat_model).ainvoke({
         "formatted_conversation": format_conversation(conversation),
-        "table_summaries": table_summaries
     })
-    relevant_table_names = rewritten_message.get("relevant_tables", [])
-    context = rewritten_message.get("context", "").strip()
+    context = result.get("context", "").strip()
     last_human_message: HumanMessage = HumanMessage(content="")
     for message in conversation[::-1]:
         if message.type == "human":
             last_human_message = message
             break
-    rewritten_message = f"Bảng: {', '.join(relevant_table_names)}. "
-    rewritten_message += context
-    rewritten_message += f". {last_human_message.content}"
-    state["rewritten_message"] = rewritten_message
+    state["rewritten_message"] = context + f"\n{last_human_message.content}"
     return state

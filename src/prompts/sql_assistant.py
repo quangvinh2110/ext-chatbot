@@ -6,17 +6,37 @@ MESSAGE_REWRITING_TEMPLATE = """
 You are an expert Context Extractor for a database chatbot. Your task is to analyze a conversation between a "Customer" and a "Support Team" and identify the **background context** required to understand the Customer's LATEST message.
 
 ### Rules
-1. **Context Rewriting:** 
-   - The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, ALL active references and constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the specific entities, dates, IDs, feature, values, etc. mentioned previously. The final context is **NOT ALLOWED** to contain any pronouns or vague references. 
-   - Only include the context that is related to the Customer's LATEST message. If there is no relevant context, return an empty string.
-   - The context must sound like the customer are re-describing the context to the support team.
-2. **Table Selection:** Compare the conversation against the "Table Summaries" provided above. Identify which tables are needed to answer the user's latest question. 
-3. **Output Format:** Output a JSON object inside a json markdown code block using this format:
+- The context must be fully interpretable in isolation, requiring no access to the conversation history to understand. You must identify the core subject, ALL active references and constraints from the dialogue and synthesize them into the context. **Explicitly resolve** all pronouns and relative references by substituting them with the specific entities, dates, IDs, feature, values, etc. mentioned previously. The final context is **NOT ALLOWED** to contain any pronouns or vague references. 
+- Only include the context that is related to the Customer's LATEST message. If there is no relevant context, return an empty string.
+- The context must sound like the customer are re-describing the context to the support team.
+- Output a JSON object inside a json markdown code block using this format:
 ```json
 {{
-    "relevant_tables": ["table name 1", "table name 2", ...],
     "context": "the relevant and specific context in Vietnamese"
 }}
+```
+
+### Conversation:
+{formatted_conversation}
+""".strip()
+
+
+TABLE_SELECTING_TEMPLATE = """
+### Role:
+You are a Database Schema Selector. Your task is to identify the subset of tables relevant to the user's LATEST request.
+
+### Instructions:
+1. Analyze the conversation between a "Customer" and a "Support Team" and identify "What is the background context required to understand the Customer's LATEST message?"
+2. Review the **Table Summaries** and select tables that align with the background context and user's LATEST intent.
+3. If the user asks a question that requires connecting data from multiple tables (e.g., "Customer names and their Order dates"), you MUST select ALL tables required to join them (e.g., `customers` AND `orders`).
+4. Select only the tables that are strictly necessary. Do not include tables "just in case."
+5. Return a valid JSON object inside a json code block using this format:
+```json
+{{
+    "explanation": "Explanation of the decision in Vietnamese.",
+    "relevant_tables": ["table_name_1", "table_name_2",...]
+}}
+```
 
 ### Table Summaries:
 {table_summaries}
@@ -64,7 +84,7 @@ You write SQL queries for a {dialect} database. The Support Team is querying the
 
 ### Guidelines:
 1. Use only tables, columns, and relationships explicitly listed in the provided schema. Do not make assumptions about missing or inferred columns/tables.
-2. Use only {dialect} syntax. Be aware that {dialect} has limited built-in date/time functions compared to other sql dialects.
+2. Use only {dialect} syntax. Be aware that {dialect} has limited built-in date/time functions compared to other sql dialects. Do NOT use INSERT, UPDATE, DELETE, ALTER, DROP, CREATE, etc. statements. Only use SELECT statements to query the database.
 3. Escape reserved keywords or case-sensitive identifiers using double quotes (" "), e.g., "order".
 4. If the customer's question is ambiguous or unclear, you must make your best reasonable guess based on the schema. Ensure the query is optimized, precise, and error-free. 
 

@@ -6,24 +6,24 @@ _json_markdown_re = re.compile(r"```json\s*([\s\S]*?)\s*```", re.DOTALL)
 
 def parse_sql_output(msg_content: str) -> str:
     try:
-        match = _sql_markdown_re.search(msg_content)
-        if match:
-            return match.group(1).strip()
+        matches = _sql_markdown_re.findall(msg_content)
+        if matches:
+            return matches[-1].strip()
         else:
             raise ValueError("No SQL query found in the content")
-    except Exception:
-        raise ValueError("Failed to parse SQL from response")
+    except Exception as e:
+        raise ValueError(f"Failed to parse SQL from response: {e}")
 
 
 def parse_json_output(msg_content: str) -> dict:
     try:
-        match = _json_markdown_re.search(msg_content)
-        if match:
-            return json.loads(match.group(1).strip())
+        matches = _json_markdown_re.findall(msg_content)
+        if matches:
+            return json.loads(matches[-1].strip())
         else:
             raise ValueError("No JSON found in the content")
-    except Exception:
-        raise ValueError("Failed to parse JSON from response")
+    except Exception as e:
+        raise ValueError(f"Failed to parse JSON from response: {e}")
 
 
 def extract_fn(text: str) -> tuple[str, str]:

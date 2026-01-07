@@ -5,7 +5,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from langchain_core.language_models import BaseChatModel
 
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 from .message_rewriter import rewrite_message
 from .schema_linker import link_schema
 from .sql_generator import generate_sql_query
@@ -54,7 +54,6 @@ def build_sql_assistant_without_answer_generation(
         partial(
             rewrite_message,
             chat_model=chat_model,
-            database=database
         )
     )
     builder.add_node(

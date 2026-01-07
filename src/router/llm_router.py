@@ -7,7 +7,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from .utils import format_conversation
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 from ..prompts import ROUTING_TEMPLATE
 from ..utils import parse_json_output
 

@@ -11,7 +11,7 @@ from langchain_core.language_models import BaseChatModel
 
 from .state import SQLAssistantState
 from ..utils import get_today_date_vi
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 from ..prompts import ANSWER_GEN_TEMPLATE, QUERY_DATABASE_TOOL
 
 

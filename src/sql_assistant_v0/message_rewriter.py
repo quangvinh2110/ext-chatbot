@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage
 from ..prompts import MESSAGE_REWRITING_TEMPLATE
 from .state import SQLAssistantState
 from ..utils import parse_json_output, format_conversation
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 
 
 _message_rewriting_chain_cache: Dict[int, Runnable] = {}
@@ -51,7 +51,7 @@ async def rewrite_message(
         if message.type == "human":
             last_human_message = message
             break
-    rewritten_message = f"Bảng: {', '.join(relevant_table_names)}. "
+    rewritten_message = f"Bảng: {', '.join(relevant_table_names)}. " if relevant_table_names else ""
     rewritten_message += context
     rewritten_message += f". {last_human_message.content}"
     state["rewritten_message"] = rewritten_message

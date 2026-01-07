@@ -3,7 +3,7 @@ import asyncio
 
 from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, HumanMessage
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
@@ -22,7 +22,7 @@ def get_schema_linking_chain(chat_model: BaseChatModel) -> Runnable:
     if chat_model_id not in _schema_linking_chain_cache:
         _schema_linking_chain_cache[chat_model_id] = (
             ChatPromptTemplate([("human", SCHEMA_LINKING_TEMPLATE)])
-            | chat_model
+            | chat_model.bind(temperature=0.0)
             | JsonOutputParser()
         )
     
@@ -30,10 +30,10 @@ def get_schema_linking_chain(chat_model: BaseChatModel) -> Runnable:
 
 
 async def _link_schema_one(
-    conversation: List[AnyMessage],
-    table_name: str,
     chat_model: BaseChatModel,
     database: SQLiteDatabase,
+    conversation: List[AnyMessage],
+    table_name: str,
     column_sample_values: Optional[Dict[str, List[str]]] = None,
     allowed_col_names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
@@ -115,16 +115,19 @@ async def link_schema(
     database: SQLiteDatabase,
 ) -> SQLAssistantState:
     conversation: List[AnyMessage] = []
-    if state.get("rewritten_message"):
-        conversation = [HumanMessage(content=state.get("rewritten_message"))]
-    elif state.get("conversation"):
-        conversation = state.get("conversation", [])
+    if state.get("context"):
+        conversation.append(SystemMessage(content=state.get("context")))
+    
+    if state.get("conversation"):
+        last_human_message: HumanMessage = HumanMessage(content="")
+        for message in state.get("conversation", [])[::-1]:
+            if message.type == "human":
+                last_human_message = message
+                break
+        conversation.append(last_human_message)
     else:
-        raise ValueError("conversation or rewritten_message is required in the input")
-    # if state.get("conversation"):
-    #     conversation = state.get("conversation")
-    # else:
-    #     raise ValueError("conversation is required in the input")
+        raise ValueError("conversation is required in the input")
+        
     sample_values = state.get("sample_values", {})
     max_retries = 1
     # queue = []
@@ -135,13 +138,15 @@ async def link_schema(
     #             "allowed_col_names": col_group,
     #             "conversation": conversation
     #         })
+    relevant_tables = state.get("relevant_tables", [])
+    relevant_tables = relevant_tables if relevant_tables else database.get_usable_table_names()
     queue = [
         {
             "table_name": table_name, 
             "conversation": conversation,
             "column_sample_values": sample_values.get(table_name),
         } 
-        for table_name in database.get_usable_table_names()
+        for table_name in relevant_tables
     ]
     successful_results = []
     for _ in range(max_retries):

@@ -12,6 +12,7 @@ from sqlalchemy import (
     create_engine,
     inspect,
     text,
+    event,
 )
 from sqlalchemy.engine import Engine, Result
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
@@ -19,7 +20,7 @@ from sqlalchemy.types import NullType
 
 from langchain_core.embeddings import Embeddings
 
-from .utils import truncate_word, _safe_filename
+from ..utils.table import truncate_word, _safe_filename
 
 
 class SQLiteDatabase:
@@ -40,6 +41,23 @@ class SQLiteDatabase:
             return rendered.strip() if rendered.strip() else default
         except Exception:
             return default
+
+
+    def _register_custom_functions(self):
+        """
+        Registers a custom Python implementation for the SQL LOWER() function.
+        SQLite's default LOWER() is ASCII-only. Python's .lower() handles Unicode.
+        """
+        def _unicode_lower(val: str | None) -> str | None:
+            if val is None:
+                return None
+            return str(val).lower()
+
+        @event.listens_for(self._engine, "connect")
+        def receive_connect(dbapi_connection, connection_record):
+            # dbapi_connection is the raw sqlite3 connection object
+            # We override the built-in LOWER function with Python's logic
+            dbapi_connection.create_function("LOWER", 1, _unicode_lower)
 
 
     def __init__(
@@ -72,6 +90,8 @@ class SQLiteDatabase:
         self._engine = engine
         if self._engine.dialect.name != "sqlite":
             raise ValueError("SQLiteDatabase only supports SQLite databases")
+
+        self._register_custom_functions()
         
         if include_tables and ignore_tables:
             raise ValueError("Cannot specify both include_tables and ignore_tables")
@@ -339,9 +359,9 @@ class SQLiteDatabase:
             
             # Build comment with description and example values
             comment_parts = []
-            col_cmt = column_descriptions.get(col.name, "")
-            if col_cmt:
-                comment_parts.append(col_cmt)
+            # col_cmt = column_descriptions.get(col.name, "")
+            # if col_cmt:
+            #     comment_parts.append(col_cmt)
             
             # Add sample values if available
             if column_sample_values.get(col.name, []):
@@ -563,6 +583,81 @@ class SQLiteDatabase:
             ]
 
 
+    def _validate_select_only(self, command: str) -> None:
+        """
+        Validate that the SQL command is a SELECT query only.
+        Raises ValueError if the command contains INSERT, DELETE, UPDATE, CREATE, DROP, ALTER, etc.
+        """
+        # Remove leading/trailing whitespace
+        command = command.strip()
+        if not command:
+            raise ValueError("Empty SQL command is not allowed")
+        
+        # Convert to uppercase for case-insensitive checking
+        command_upper = command.upper()
+        
+        # Remove SQL comments (-- and /* */)
+        lines = command_upper.split('\n')
+        cleaned_lines = []
+        in_block_comment = False
+        for line in lines:
+            # Handle block comments
+            if in_block_comment:
+                if '*/' in line:
+                    # End of block comment on this line
+                    line = line[line.index('*/') + 2:]
+                    in_block_comment = False
+                else:
+                    # Still inside block comment, skip entire line
+                    continue
+            
+            # Process block comments that start and/or end on this line
+            while '/*' in line:
+                start_idx = line.index('/*')
+                if '*/' in line[start_idx:]:
+                    # Block comment ends on same line
+                    end_idx = line.index('*/', start_idx)
+                    line = line[:start_idx] + ' ' + line[end_idx + 2:]
+                else:
+                    # Block comment starts but doesn't end on this line
+                    line = line[:start_idx]
+                    in_block_comment = True
+                    break
+            
+            # Remove single-line comments (only if not in block comment)
+            if not in_block_comment and '--' in line:
+                line = line[:line.index('--')]
+            
+            if line.strip():
+                cleaned_lines.append(line)
+        
+        cleaned_command = ' '.join(cleaned_lines)
+        
+        # Check for forbidden SQL keywords (modifying operations)
+        forbidden_keywords = [
+            'INSERT', 'DELETE', 'UPDATE', 'CREATE', 'DROP', 'ALTER',
+            'TRUNCATE', 'REPLACE', 'MERGE', 'GRANT', 'REVOKE'
+        ]
+        
+        # Check if command starts with SELECT or WITH (for CTEs)
+        is_select = cleaned_command.startswith('SELECT') or cleaned_command.startswith('WITH')
+        
+        # Check for forbidden keywords anywhere in the command
+        has_forbidden = any(keyword in cleaned_command for keyword in forbidden_keywords)
+        
+        if not is_select:
+            raise ValueError(
+                f"Only SELECT queries are allowed. "
+                f"Found non-SELECT command: {command[:100]}..."
+            )
+        
+        if has_forbidden:
+            raise ValueError(
+                "Modifying SQL commands (INSERT, DELETE, UPDATE, CREATE, DROP, ALTER, etc.) "
+                "are not allowed. Only SELECT queries are permitted."
+            )
+
+
     async def run(
         self,
         command: str,
@@ -575,7 +670,11 @@ class SQLiteDatabase:
         """
         Execute a SQL command asynchronously.
         Offloads the blocking SQLAlchemy call to a separate thread.
+        Only SELECT queries are allowed. INSERT, DELETE, UPDATE, CREATE, DROP, ALTER, etc. are forbidden.
         """
+        # Validate that only SELECT queries are allowed
+        self._validate_select_only(command)
+        
         await self._semaphore.acquire()
         try:
             return await asyncio.to_thread(

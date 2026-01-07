@@ -10,7 +10,7 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from .state import SQLAssistantState
 from ..utils import format_conversation
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 from ..prompts import RERANK_ROWS_TEMPLATE
 
 _rows_reranking_chain_cache: Dict[int, Runnable] = {}

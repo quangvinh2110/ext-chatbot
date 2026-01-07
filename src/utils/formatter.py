@@ -56,11 +56,15 @@ def get_today_date_vi() -> str:
 def format_conversation(conversation: List[AnyMessage]) -> str:
     formatted_conversation = ""
     end_index = len(conversation) - 1 
+    start_index = 0
     for ind in range(len(conversation) - 1, -1, -1):
         if conversation[ind].type == "human":
             end_index = ind
             break
-    for message in conversation[:end_index]:
+    if conversation[0].type == "system":
+        start_index = 1
+        formatted_conversation += f"Context: {conversation[0].content}\n"
+    for message in conversation[start_index:end_index]:
         if message.type == "human":
             formatted_conversation += f"Customer: {message.content}\n"
         elif message.type == "ai":

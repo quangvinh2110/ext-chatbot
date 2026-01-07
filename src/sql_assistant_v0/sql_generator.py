@@ -7,7 +7,7 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 
 from .state import SQLAssistantState
-from ..tools.table.sqlite_database import SQLiteDatabase
+from ..tools.sqlite_database import SQLiteDatabase
 from ..prompts import SQL_GEN_TEMPLATE
 from ..utils import get_today_date_en, parse_sql_output, format_conversation
 

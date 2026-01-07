@@ -14,8 +14,8 @@ from sqlalchemy import create_engine
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 
-from src.sql_assistant_v0.full_pipeline import build_sql_assistant_without_answer_generation
-from src.tools.table.sqlite_database import SQLiteDatabase
+from src.sql_assistant_v4.full_pipeline import build_sql_assistant_without_answer_generation
+from src.tools.sqlite_database import SQLiteDatabase
 from src.utils.client import (
     get_openai_llm_model,
     get_infinity_embeddings,
@@ -23,7 +23,7 @@ from src.utils.client import (
 from src.router.llm_router import route_conversation
 
 # Load environment variables
-load_dotenv(os.path.join(os.path.dirname(__file__), "env", "openai.env"))
+load_dotenv(os.path.join(os.path.dirname(__file__), "env", "internal.env"))
 
 # Global variables for pipeline, database, and chat model
 sql_assistant_pipeline = None
@@ -157,7 +157,7 @@ def convert_to_conversation(
     # Add current message
     messages.append(HumanMessage(content=current_message))
     
-    return messages[-20:]
+    return messages
 
 
 @asynccontextmanager
