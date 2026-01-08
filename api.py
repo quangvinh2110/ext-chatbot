@@ -319,7 +319,7 @@ async def sql_search(request: SQLSearchRequest):
         
         # Extract results
         return SQLSearchResponse(
-            sql_query=sql_queries[-1] if sql_queries else "",
+            sql_query=sql_queries[0] if sql_queries else "",
             db_output=final_state.get("db_output", {}).get("result", [])[:5],
             ddl_schema=ddl_schema,
         )
