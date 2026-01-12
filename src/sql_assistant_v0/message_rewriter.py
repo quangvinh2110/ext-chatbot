@@ -36,23 +36,17 @@ async def rewrite_message(
     conversation = state.get("conversation")
     if not conversation:
         raise ValueError("conversation is required")
+    if len(conversation) < 2:
+        state["context"] = ""
+        return state
     table_overview = database.get_table_overview()
     table_summaries = ""
     if table_overview:
         table_summaries = "\n".join([f"- Table Name: {table['name']}\n  Table Summary: {table['summary']}" for table in table_overview if table["name"] in database.get_usable_table_names()])
-    rewritten_message = await get_message_rewriting_chain(chat_model).ainvoke({
+    result = await get_message_rewriting_chain(chat_model).ainvoke({
         "formatted_conversation": format_conversation(conversation),
         "table_summaries": table_summaries
     })
-    relevant_table_names = rewritten_message.get("relevant_tables", [])
-    context = rewritten_message.get("context", "").strip()
-    last_human_message: HumanMessage = HumanMessage(content="")
-    for message in conversation[::-1]:
-        if message.type == "human":
-            last_human_message = message
-            break
-    rewritten_message = f"Bảng: {', '.join(relevant_table_names)}. " if relevant_table_names else ""
-    rewritten_message += context
-    rewritten_message += f". {last_human_message.content}"
-    state["rewritten_message"] = rewritten_message
+    context = result.get("context", "").strip()
+    state["context"] = context
     return state

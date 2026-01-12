@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 
 from ..tools.sqlite_database import SQLiteDatabase
 from .message_rewriter import rewrite_message
@@ -16,12 +17,22 @@ async def get_sample_values(
     state: SQLAssistantState,
     database: SQLiteDatabase,
 ) -> SQLAssistantState:
-    rewritten_message = state.get("rewritten_message")
-    if not rewritten_message:
+    full_query: str = ""
+    if state.get("context") and isinstance(state.get("context"), str):
+        full_query += f"{state.get('context')}"
+    if state.get("conversation"):
+        last_human_message: HumanMessage = HumanMessage(content="")
+        for message in state.get("conversation", [])[::-1]:
+            if message.type == "human":
+                last_human_message = message
+                break
+        if isinstance(last_human_message.content, str):
+            full_query += f"\n{last_human_message.content}"
+    if not full_query:
         state["sample_values"] = {}
         return state
     state["sample_values"] = await database.search_similar_values_from_message(
-        rewritten_message,
+        full_query,
         k=5
     )
     return state

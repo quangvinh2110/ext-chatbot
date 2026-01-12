@@ -1,6 +1,9 @@
 from typing import List, Dict
 import re
 from sqlglot import parse_one, exp
+import itertools
+from collections import Counter
+from sqlglot.optimizer.normalize import normalize
 
 from .state import SQLAssistantState
 from ..tools.sqlite_database import SQLiteDatabase
@@ -181,4 +184,225 @@ def refine_sql_query(
     if normalize_sql_query(refined_sql) != normalize_sql_query(sql_query):
         state["sql_queries"].append(refined_sql)
         
+    return state
+
+
+async def find_relaxed_constraints(
+    state: SQLAssistantState,
+    database: SQLiteDatabase,
+    max_rows: int = 15,
+) -> SQLAssistantState:
+    sql_queries: List[str] = state.get("sql_queries", [])
+    if not sql_queries:
+        return state
+    
+    original_sql = sql_queries[-1]
+    
+    # 1. Parse and Get Real Tables
+    try:
+        parsed = parse_one(original_sql, read=database.dialect.lower())
+    except Exception:
+        return state
+
+    # We need to know what the real tables are to decide if a subquery is "safe" to relax
+    # (i.e., we are filtering raw data, not complex calculated CTEs)
+    usable_tables = set(database.get_usable_table_names())
+
+    # ---------------------------------------------------------
+    # 2. Identify All WHERE scopes (Main, CTEs, Subqueries, Unions)
+    # ---------------------------------------------------------
+    # We find ALL exp.Where nodes in the entire tree
+    all_where_nodes = list(parsed.find_all(exp.Where))
+    
+    if not all_where_nodes:
+        return state
+
+    best_result = None
+
+    # ---------------------------------------------------------
+    # 3. Iterate Over Each Scope
+    # ---------------------------------------------------------
+    for where_node in all_where_nodes:
+        
+        # 3a. Scope Safety Check
+        # We try to identify the tables involved in this specific SELECT/UPDATE statement.
+        # If this WHERE clause filters a table that isn't in our "usable_tables", 
+        # it might be a complex CTE alias. We skip it to avoid breaking logic.
+        parent_select = where_node.find_ancestor(exp.Select)
+        if not parent_select: 
+            continue # Should not happen in standard SQL
+
+        scope_tables = set()
+        for table in parent_select.find_all(exp.Table):
+            # table.name is the real name, table.alias is the alias
+            scope_tables.add(table.name)
+        
+        # If NO tables in this scope are real DB tables, assume it's a wrapper 
+        # around a complex CTE and skip relaxing this specific node.
+        # (We allow partial matches, e.g. JOINs between Real Table and CTE)
+        if not scope_tables.intersection(usable_tables):
+            # Exception: If it's a simple query with aliased tables not in usable list?
+            # We assume usable_tables contains the raw table names.
+            continue
+
+        # ---------------------------------------------------------
+        # 3b. Normalize & Group Constraints (DNF)
+        # ---------------------------------------------------------
+        # Copy the condition to work on it
+        original_condition = where_node.this
+        normalized_condition = normalize(original_condition)
+
+        constraint_groups = []
+        
+        # Helper to flatten ANDs
+        def get_and_constraints(node):
+            if isinstance(node, exp.And):
+                return get_and_constraints(node.this) + get_and_constraints(node.expression)
+            return [node]
+
+        # Extract branches (ORs)
+        if isinstance(normalized_condition, exp.Or):
+            def get_or_branches(node):
+                if isinstance(node, exp.Or):
+                    return get_or_branches(node.this) + get_or_branches(node.expression)
+                return [node]
+            branches = get_or_branches(normalized_condition)
+            for branch in branches:
+                constraint_groups.append(get_and_constraints(branch))
+        else:
+            constraint_groups.append(get_and_constraints(normalized_condition))
+
+        # ---------------------------------------------------------
+        # 3c. Attempt Relaxation on this Scope
+        # ---------------------------------------------------------
+        found_in_scope = False
+        
+        for group in constraint_groups:
+            if len(group) < 2: 
+                continue # Skip single conditions
+            if found_in_scope: 
+                break
+
+            # Try removing 1..N constraints
+            for r in range(len(group) - 1, 0, -1):
+                if found_in_scope: 
+                    break
+                
+                for subset in itertools.combinations(group, r):
+                    # 1. Clone the FULL original parsed tree
+                    # We must run the FULL query, just with this specific WHERE modified
+                    temp_full_tree = parsed.copy()
+                    
+                    # 2. Locate the specific WHERE node in the cloned tree
+                    # We cannot use the 'where_node' reference directly because it points to old tree.
+                    # We find it by path or simply by matching structure? 
+                    # Easier: We know the index of where_node in all_where_nodes.
+                    # Let's find the corresponding node in temp_full_tree.
+                    temp_where_nodes = list(temp_full_tree.find_all(exp.Where))
+                    current_idx = all_where_nodes.index(where_node)
+                    
+                    if current_idx >= len(temp_where_nodes):
+                        continue # Structure mismatch safety
+                    
+                    target_where = temp_where_nodes[current_idx]
+
+                    # 3. Construct the subset condition
+                    if len(subset) == 1:
+                        new_cond = subset[0]
+                    else:
+                        new_cond = subset[0]
+                        for i in range(1, len(subset)):
+                            new_cond = exp.And(this=new_cond, expression=subset[i])
+
+                    # 4. Swap it in
+                    target_where.set("this", new_cond)
+                    
+                    # 5. Run it
+                    modified_sql = temp_full_tree.sql(dialect=database.dialect.lower())
+                    check_sql = f"{modified_sql} LIMIT {max_rows + 5}"
+                    
+                    results = await database.run_no_throw(check_sql, include_columns=True)
+                    
+                    if results and len(results) > 0:
+                        found_in_scope = True
+                        
+                        # Calculate Drop List
+                        subset_sqls = {n.sql() for n in subset}
+                        dropped = [c for c in group if c.sql() not in subset_sqls]
+                        
+                        # Logic to prioritize the "Best" result across all scopes?
+                        # Usually, deeper scopes (subqueries) returning data is better than 
+                        # outer scopes returning data, but here we just take the first valid relaxation found.
+                        # Or strictly compare counts/scores.
+                        current_score = len(subset) # Prefer keeping MORE constraints
+                        
+                        if best_result is None or current_score > best_result["score"]:
+                            best_result = {
+                                "score": current_score,
+                                "results": results,
+                                "dropped_constraints": dropped,
+                                "scope_tables": list(scope_tables),
+                                "result_count": len(results)
+                            }
+                        break # Found best subset for this group
+
+    # ---------------------------------------------------------
+    # 4. Generate Analysis
+    # ---------------------------------------------------------
+    if not best_result:
+        return state
+
+    results = best_result["results"]
+    dropped_nodes = best_result["dropped_constraints"]
+    
+    # Extract columns from dropped nodes for reporting
+    cols_of_interest = set()
+    for node in dropped_nodes:
+        for col in node.find_all(exp.Column):
+            cols_of_interest.add(col.name)
+
+    dropped_str = ", ".join([n.sql() for n in dropped_nodes])
+    
+    # Format Data Stats
+    stats_msgs = []
+    if best_result["result_count"] > max_rows:
+        for col_name in cols_of_interest:
+            # Case-insensitive key lookup
+            sample = results[0]
+            key = next((k for k in sample.keys() if k.lower() == col_name.lower()), None)
+            
+            if key:
+                vals = [r[key] for r in results if r[key] is not None]
+                if vals:
+                    if isinstance(vals[0], (int, float)):
+                        stats_msgs.append(f"{col_name} range: {min(vals)} - {max(vals)}")
+                    else:
+                        # Top 5 distinct strings
+                        top_k = [str(k) for k, v in Counter(vals).most_common(5)]
+                        stats_msgs.append(f"{col_name} examples: {', '.join(top_k)}")
+    
+    stats_text = "; ".join(stats_msgs)
+    
+    # Construct Message
+    if best_result["result_count"] > max_rows:
+        msg = (
+            f"No results found. However, inside the query logic for tables {best_result['scope_tables']}, "
+            f"if we remove conditions [{dropped_str}], we find over {max_rows} matches. "
+            f"Available data in that subset: {stats_text}. "
+            f"Would you like to refine your filters?"
+        )
+    else:
+        msg = (
+            f"No results found. However, if we relax the conditions [{dropped_str}] "
+            f"(specifically in the logic for {best_result['scope_tables']}), "
+            f"I found {best_result['result_count']} results. Would you like to see them?"
+        )
+
+    state["relaxation_analysis"] = {
+        "status": "relaxed_success",
+        "dropped": [n.sql() for n in dropped_nodes],
+        "message": msg,
+        "subset_results": results if len(results) <= max_rows else []
+    }
+    
     return state

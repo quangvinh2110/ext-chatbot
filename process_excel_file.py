@@ -9,7 +9,7 @@ from src.utils import write_json
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), "env", "internal.env"))
 
 
 def process_excel(input_file: str, output_dir: str):
@@ -33,7 +33,7 @@ def process_excel(input_file: str, output_dir: str):
     processor = TableProcessor()
 
     with ExcelParser(input_file, skip_empty_rows=False) as parser:
-        for sheet_name in sheet_names[0:1]:
+        for sheet_name in sheet_names[1:6]:
             print(f"Processing sheet: {sheet_name}")
             try:
                 tables = parser.parse_sheet(sheet_name)

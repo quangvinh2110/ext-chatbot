@@ -102,10 +102,53 @@ def create_sqlite(
     if not properties:
         raise ValueError("Schema must contain 'properties'")
     
+    # Debug: Check if properties already has duplicates (shouldn't be possible but check anyway)
+    print(f"Original properties count: {len(properties)}")
+    print(f"Original property names: {list(properties.keys())}")
+    
+    # Handle duplicate column names (case-insensitive to match SQLite behavior)
+    # Prioritize non-string types over string types
+    deduplicated_properties: Dict[str, Any] = {}
+    # Track lowercase names to their canonical (first seen) name
+    lowercase_to_canonical: Dict[str, str] = {}
+    
+    for prop_name, prop_schema in properties.items():
+        prop_name_lower = prop_name.lower()
+        
+        if prop_name_lower in lowercase_to_canonical:
+            # Case-insensitive duplicate found
+            canonical_name = lowercase_to_canonical[prop_name_lower]
+            existing_type = deduplicated_properties[canonical_name].get('type', 'string')
+            new_type = prop_schema.get('type', 'string')
+            
+            print(f"Warning: Case-insensitive duplicate column found: '{canonical_name}' vs '{prop_name}'")
+            print(f"  Existing type: {existing_type}, New type: {new_type}")
+            
+            # Keep non-string type over string type
+            if existing_type == 'string' and new_type != 'string':
+                # Replace with new property but keep the canonical name
+                deduplicated_properties[canonical_name] = prop_schema
+                print(f"  -> Replacing with new property (keeping name '{canonical_name}')")
+            else:
+                print(f"  -> Keeping existing property '{canonical_name}'")
+        else:
+            # New property (no case-insensitive duplicate)
+            lowercase_to_canonical[prop_name_lower] = prop_name
+            deduplicated_properties[prop_name] = prop_schema
+    
     # Build column definitions
     columns = []
     column_names = []
-    for prop_name, prop_schema in properties.items():
+    seen_column_names = set()
+    
+    for prop_name, prop_schema in deduplicated_properties.items():
+        # Skip if we've already added this column name
+        if prop_name in seen_column_names:
+            print(f"Warning: Skipping duplicate column '{prop_name}' in SQL generation")
+            continue
+        
+        seen_column_names.add(prop_name)
+        
         # Get type from schema
         prop_type = prop_schema.get('type', 'string')
         sqlite_type = pydantic_to_sqlite_type(prop_type)
@@ -121,6 +164,13 @@ def create_sqlite(
         columns.append(f'{quoted_col_name} {sqlite_type}')
         column_names.append(prop_name)
     
+    # Debug: Check for duplicates in column_names
+    if len(column_names) != len(set(column_names)):
+        from collections import Counter
+        duplicates = [name for name, count in Counter(column_names).items() if count > 1]
+        print(f"ERROR: Duplicate column names found: {duplicates}")
+        print(f"All column names: {column_names}")
+    
     # Create table SQL
     create_table_sql = '''
     CREATE TABLE IF NOT EXISTS "{table_name}" (\n\t{columns}\n)
@@ -128,6 +178,12 @@ def create_sqlite(
         table_name=table_name,
         columns=',\n\t'.join(columns)
     ).strip()
+    
+    # Debug: Print the SQL being generated
+    print(f"Creating table: {table_name}")
+    print(f"Number of columns: {len(column_names)}")
+    if len(column_names) != len(set(column_names)):
+        print(f"SQL Statement:\n{create_table_sql}")
 
     # Metadata (EAV) table for column descriptions and groups
     metadata_table_name = f"{table_name}__metadata"
@@ -197,14 +253,20 @@ def create_sqlite(
             rows_to_insert = []
             for row in data:
                 # Extract values in the order of column_names
-                values = [row.get(col_name) for col_name in column_names]
+                values = []
+                for col_name in column_names:
+                    value = row.get(col_name)
+                    # Handle list values by joining with "; "
+                    if isinstance(value, list):
+                        value = "; ".join(str(item) for item in value)
+                    values.append(value)
                 rows_to_insert.append(values)
             
             cursor.executemany(insert_sql, rows_to_insert)
 
         # Insert metadata rows (one per column * attributes)
         metadata_rows = []
-        for col_name, prop_schema in properties.items():
+        for col_name, prop_schema in deduplicated_properties.items():
             description = prop_schema.get('description')
             group_idx: Optional[int] = column_group_lookup.get(col_name)
             metadata_rows.append((col_name, 'description', description))

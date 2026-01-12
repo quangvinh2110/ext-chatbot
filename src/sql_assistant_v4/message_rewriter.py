@@ -1,11 +1,10 @@
-from typing import Dict
+from typing import Dict, List
 import asyncio
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage
 
 from .state import SQLAssistantState
 from ..prompts import MESSAGE_REWRITING_TEMPLATE, TABLE_SELECTING_TEMPLATE
@@ -57,21 +56,36 @@ async def rewrite_message(
     table_summaries = ""
     if table_overview:
         table_summaries = "\n".join([f"- Table Name: {table['name']}\n  Table Summary: {table['summary']}" for table in table_overview if table["name"] in database.get_usable_table_names()])
-    result = await asyncio.gather(
-        get_message_rewriting_chain(chat_model).ainvoke({
+    tasks = []
+    if len(conversation) >= 2:
+        tasks.append(get_message_rewriting_chain(chat_model).ainvoke({
             "formatted_conversation": format_conversation(conversation),
-        }),
-        get_table_selecting_chain(chat_model).ainvoke({
+        }))
+    else:
+        async def default_message_rewriting_chain():
+            return {"context": ""}
+        tasks.append(default_message_rewriting_chain())
+    usable_table_names = database.get_usable_table_names()
+    num_columns_list = []
+    for table_name in usable_table_names:
+        column_names = database.get_column_names(table_name)
+        if isinstance(column_names, list):
+            num_columns_list.append(len(column_names))
+    if len(usable_table_names) >= 2 and sum(num_columns_list) >= 15:
+        tasks.append(get_table_selecting_chain(chat_model).ainvoke({
             "formatted_conversation": format_conversation(conversation),
             "table_summaries": table_summaries
-        })
-    )
+        }))
+    else:
+        async def default_table_selecting_chain():
+            return {"relevant_tables": database.get_usable_table_names()}
+        tasks.append(default_table_selecting_chain())
+    result = await asyncio.gather(*tasks)
     relevant_tables = result[1].get("relevant_tables", [])
-    is_valid = True
+    valid_relevant_tables: List[str] = []
     for table_name in relevant_tables:
-        if table_name not in database.get_usable_table_names():
-            is_valid = False
-            break
-    state["relevant_tables"] = relevant_tables if is_valid else database.get_usable_table_names()
+        if table_name in database.get_usable_table_names():
+            valid_relevant_tables.append(table_name)
+    state["relevant_tables"] = valid_relevant_tables
     state["context"] = result[0].get("context", "").strip()
     return state

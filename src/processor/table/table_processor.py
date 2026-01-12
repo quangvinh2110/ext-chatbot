@@ -138,7 +138,8 @@ class TableProcessor:
             data_groups=data_groups, 
             column_groups=column_groups, 
             sheet_name=table.sheet_name,
-            max_retries=max_retries
+            max_retries=max_retries,
+            without_new_cols=(sum(len(group) for group in column_groups) > 20),
         ))
         print(pydantic_schema)
 

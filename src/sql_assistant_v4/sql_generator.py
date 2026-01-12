@@ -24,12 +24,8 @@ def preprocess_for_sql_query_generation(
         conversation.append(SystemMessage(content=state.get("context", "")))
 
     if state.get("conversation"):
-        last_human_message: HumanMessage = HumanMessage(content="")
-        for message in state.get("conversation", [])[::-1]:
-            if message.type == "human":
-                last_human_message = message
-                break
-        conversation.append(last_human_message)
+        max_turns = 21
+        conversation.extend(state.get("conversation", [])[-max_turns:])
     else:
         raise ValueError("conversation is required in the input")
     formatted_conversation = format_conversation(conversation)

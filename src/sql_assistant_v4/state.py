@@ -10,4 +10,5 @@ class SQLAssistantState(TypedDict):
     linked_schema: Dict[str, Dict[str, str]]
     sql_queries: List[str]
     db_output: Dict[str, Any]
-    final_answer: Optional[str]
+    relaxation_analysis: Optional[Dict[str, Any]]
+    return_message: str

@@ -42,7 +42,6 @@ class SQLiteDatabase:
         except Exception:
             return default
 
-
     def _register_custom_functions(self):
         """
         Registers a custom Python implementation for the SQL LOWER() function.

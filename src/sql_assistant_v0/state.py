@@ -4,7 +4,7 @@ from langchain_core.messages import AnyMessage
 
 class SQLAssistantState(TypedDict):
     conversation: List[AnyMessage]
-    rewritten_message: str
+    context: str
     sample_values: Dict[str, Dict[str, List[Any]]]
     sql_queries: List[str]
     db_output: Dict[str, Any]

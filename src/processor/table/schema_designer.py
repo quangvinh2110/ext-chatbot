@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from openai import AsyncOpenAI
 from tqdm.asyncio import tqdm_asyncio
 
-from ...prompts import DESIGN_SCHEMA_TEMPLATE
+from ...prompts import DESIGN_SCHEMA_TEMPLATE, DESIGN_SCHEMA_WITHOUT_NEW_COLS_TEMPLATE
 from .utils import format_table_data_snippet_with_header, extract_json
 
 
@@ -30,6 +30,7 @@ class SchemaDesigner:
         sheet_name: Optional[str] = None,
         max_retries: int = 3,
         max_concurrent_requests: int = 10,
+        without_new_cols: bool = False,
     ) -> Dict[str, Any]:
         """
         Design schema for each data group asynchronously.
@@ -51,6 +52,7 @@ class SchemaDesigner:
                 queue=queue,
                 sheet_name=sheet_name,
                 max_concurrent_requests=max_concurrent_requests,
+                without_new_cols=without_new_cols,
             )
 
             # Collect successes and prepare retries
@@ -87,6 +89,7 @@ class SchemaDesigner:
         queue: List[Tuple[List[List[Any]], List[str]]],
         sheet_name: Optional[str] = None,
         max_concurrent_requests: int = 10,
+        without_new_cols: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Design schema for each column group asynchronously.
@@ -104,6 +107,7 @@ class SchemaDesigner:
                 column_group=column_group,
                 semaphore=semaphore,
                 sheet_name=sheet_name,
+                without_new_cols=without_new_cols,
             )
             for data_group, column_group in queue
         ]
@@ -116,6 +120,7 @@ class SchemaDesigner:
         column_group: List[str],
         semaphore: asyncio.Semaphore,
         sheet_name: Optional[str] = None,
+        without_new_cols: bool = False,
     ) -> Dict[str, Any]:
         """
         Design schema for a single column group.
@@ -135,7 +140,14 @@ class SchemaDesigner:
             data_rows=data_group,
             sample_size=10,
         )
-        prompt = DESIGN_SCHEMA_TEMPLATE.replace(
+        if without_new_cols:
+            prompt = DESIGN_SCHEMA_WITHOUT_NEW_COLS_TEMPLATE.replace(
+                "{{table_data_snippet}}", snippet
+            ).replace(
+                "{{sheet_name}}", sheet_name or "Unknown"
+            )
+        else:
+            prompt = DESIGN_SCHEMA_TEMPLATE.replace(
             "{{table_data_snippet}}", snippet
         ).replace(
             "{{sheet_name}}", sheet_name or "Unknown"

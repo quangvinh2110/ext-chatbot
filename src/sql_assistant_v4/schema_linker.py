@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import asyncio
 
 from langchain_core.runnables import Runnable
@@ -38,18 +38,6 @@ async def _link_schema_one(
     allowed_col_names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     try:
-        column_names = database.get_column_names(table_name)
-        if isinstance(column_names, list) and len(column_names) <= 5:
-            return {
-                "input_item": {
-                    "table_name": table_name,
-                    "conversation": conversation,
-                    "allowed_col_names": allowed_col_names,
-                    "column_sample_values": column_sample_values
-                },
-                "filtered_schema": (table_name, column_names),
-                "error": None
-            }
         table_overview = database.get_table_overview()
         table_summary = ""
         for table in table_overview:
@@ -140,33 +128,46 @@ async def link_schema(
     #         })
     relevant_tables = state.get("relevant_tables", [])
     relevant_tables = relevant_tables if relevant_tables else database.get_usable_table_names()
-    queue = [
-        {
-            "table_name": table_name, 
-            "conversation": conversation,
-            "column_sample_values": sample_values.get(table_name),
-        } 
-        for table_name in relevant_tables
-    ]
-    successful_results = []
-    for _ in range(max_retries):
-        tasks = [_link_schema_one(chat_model=chat_model, database=database, **input_item) for input_item in queue]
-        results = await asyncio.gather(*tasks)
-        successful_results.extend([
-            res for res in results if res["error"] is None
-        ])
-        failed_items = [
-            res["input_item"] for res in results if res["error"] is not None
+    num_columns_list = []
+    for table_name in relevant_tables:
+        column_names = database.get_column_names(table_name)
+        if isinstance(column_names, list):
+            num_columns_list.append(len(column_names))
+
+    linked_schema: List[Tuple[str, List[str]]] = []
+    if sum(num_columns_list) < 15:
+        for table_name in relevant_tables:
+            column_names = database.get_column_names(table_name)
+            if isinstance(column_names, list) and len(column_names) <= 5:
+                linked_schema.append((table_name, column_names))
+    else:
+        queue = [
+            {
+                "table_name": table_name, 
+                "conversation": conversation,
+                "column_sample_values": sample_values.get(table_name),
+            } 
+            for table_name in relevant_tables
         ]
-        queue = failed_items
-        if not queue:
-            break
-    
-    linked_schema = [
-        result["filtered_schema"] 
-        for result in successful_results 
-        if result["filtered_schema"]
-    ]
+        successful_results = []
+        for _ in range(max_retries):
+            tasks = [_link_schema_one(chat_model=chat_model, database=database, **input_item) for input_item in queue]
+            results = await asyncio.gather(*tasks)
+            successful_results.extend([
+                res for res in results if res["error"] is None
+            ])
+            failed_items = [
+                res["input_item"] for res in results if res["error"] is not None
+            ]
+            queue = failed_items
+            if not queue:
+                break
+        
+        linked_schema.extend([
+            result["filtered_schema"] 
+            for result in successful_results 
+            if result["filtered_schema"]
+        ])
     # Return per-table mapping: column_name -> datatype
     final_schema: Dict[str, Dict[str, str]] = {}
     for table_name, col_names in linked_schema:

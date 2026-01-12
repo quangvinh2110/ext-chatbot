@@ -140,6 +140,50 @@ Explanation: # your explanation of the decision here
 """.strip()
 
 
+DESIGN_SCHEMA_WITHOUT_NEW_COLS_TEMPLATE = """
+You are an expert Data Engineer and Python Pydantic Specialist. Your task is to analyze a raw snippet of tabular data and design a refined schema with appropriate data types.
+
+**Input and Output:**
+You will receive a `Data snippet`, which contains a list of JSON objects, each represent a single row from the table, with column titles as keys. Output a Pydantic-compliant JSON schema that defines the correct data types for the existing columns.
+
+### Instructions:
+*   **Scope of Analysis:** Your decisions must be based exclusively on the data within the Data snippet. Treat this snippet as the complete source of truth.
+*   **Strict Column Mapping:** Do not create, extract, or add any new columns. You must strictly output the schema for the original columns provided in the snippet only.
+*   **Data Type Inference:** Look at each column in the `Data snippet` to determine the best data type for a database or downstream analysis based on the column's semantic meaning. For instance, if a column represent calendar dates or timestamps (e.g., "dd/mm/yyyy"), use a `datetime` type; if they represent quantitative data, use `float` or `int`. Avoid defaulting to `string` if a more specific type is suitable.
+*   **Documentation:** For every column, add a concise Vietnamese description to explain the column's purpose based on its content. Besides, include approximately 3 example values found in the snippet.
+
+### Output Format:
+Output an explanation of the decision and a valid JSON object within a ```json ... ``` block:
+
+Explanation: # your explanation of the decision here
+```json
+{
+  "title": "RowData",
+  "type": "object",
+  "properties": {
+      "Original Column Name 1": {
+          "type": "string",
+          "description": "Mô tả tiếng Việt của cột 1.",
+          "examples": ["Ví dụ 1", "Ví dụ 2", "Ví dụ 3"],
+      },
+      "Original Column Name 2": {
+           "type": "number",
+           "description": "Mô tả tiếng Việt của cột 2",
+           "examples": ["Ví dụ 1", "Ví dụ 2", "Ví dụ 3"],
+      },
+      ...
+  },
+}
+```
+
+### Sheet Name:
+{{sheet_name}}
+
+### Data Snippet:
+{{table_data_snippet}}
+""".strip()
+
+
 TRANSFORM_DATA_TEMPLATE = """
 You are a Data Engineer. Your task is to transform a single `Raw Row` of data into a clean JSON object that conforms to the provided `Pydantic Schema`.
 
@@ -158,4 +202,26 @@ Return only a single JSON object inside a ```json ... ``` code block.
 
 **Pydantic Schema:**
 {{pydantic_schema}}
+""".strip()
+
+
+GENERATE_DESCRIPTION_TEMPLATE = """
+Bạn là một chuyên gia quản trị dữ liệu (Data Steward). Nhiệm vụ của bạn là phân tích cấu trúc và dữ liệu mẫu của một bảng (table) để tạo ra mô tả tóm tắt (metadata).
+
+Mô tả này sẽ được sử dụng bởi một AI Router để quyết định xem câu hỏi của người dùng có liên quan đến bảng này hay không.
+
+HÃY PHÂN TÍCH DỰA TRÊN TÊN VÀ MỘT VÀI HÀNG DỮ LIỆU CỦA BẢNG:
+**Business Name**:
+{business_name}
+
+**Sheet Name**:
+{sheet_name}
+
+**Table Data Snippet**:
+{table_data_snippet}
+
+YÊU CẦU ĐẦU RA (Định dạng JSON):
+Hãy trả về một JSON object duy nhất đặt trong ```json ...``` với các trường sau:
+- "human_name": Tên ngắn gọn, dễ hiểu cho người dùng.
+- "summary": Phần mô tả bảng bằng tiếng Việt. Nêu rõ bảng này chứa thông tin về **đối tượng gì** (Entity) và **thuộc tính quan trọng nào**.
 """.strip()
